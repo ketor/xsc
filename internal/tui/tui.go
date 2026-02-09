@@ -1121,11 +1121,12 @@ func (m Model) renderDetail(width, height int) string {
 				}
 			}
 
-			// 构建行内容 - 确保格式统一：2空格 + 序号 + 1空格 + 图标 + 1空格 + 类型 + 详情
+			// 构建行内容 - 使用固定宽度确保对齐
+			// 格式: 2空格 + 序号(占3字符宽度) + 1空格 + 图标(占2字符宽度) + 1空格 + 类型 + 详情
 			if detail != "" {
-				authLines = append(authLines, fmt.Sprintf("  %s %s %s%s", order, authIcon, authTypeStr, detail))
+				authLines = append(authLines, fmt.Sprintf("  %-3s %-2s %s%s", order, authIcon, authTypeStr, detail))
 			} else {
-				authLines = append(authLines, fmt.Sprintf("  %s %s %s", order, authIcon, authTypeStr))
+				authLines = append(authLines, fmt.Sprintf("  %-3s %-2s %s", order, authIcon, authTypeStr))
 			}
 		}
 	} else {
@@ -1163,11 +1164,12 @@ func (m Model) renderDetail(width, height int) string {
 			}
 		}
 
-		// 构建行内容 - 确保格式统一：2空格 + 序号 + 1空格 + 图标 + 1空格 + 类型 + 详情
+		// 构建行内容 - 使用固定宽度确保对齐
+		// 格式: 2空格 + 序号(占3字符宽度) + 1空格 + 图标(占2字符宽度) + 1空格 + 类型 + 详情
 		if detail != "" {
-			authLines = append(authLines, fmt.Sprintf("  1. %s %s%s", authIcon, authTypeStr, detail))
+			authLines = append(authLines, fmt.Sprintf("  %-3s %-2s %s%s", "1.", authIcon, authTypeStr, detail))
 		} else {
-			authLines = append(authLines, fmt.Sprintf("  1. %s %s", authIcon, authTypeStr))
+			authLines = append(authLines, fmt.Sprintf("  %-3s %-2s %s", "1.", authIcon, authTypeStr))
 		}
 	}
 
