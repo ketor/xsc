@@ -1094,6 +1094,7 @@ func (m Model) renderDetail(width, height int) string {
 
 	// 显示认证方式列表
 	content.WriteString(detailKeyStyle.Render("Auth Methods:\n"))
+	content.WriteString("\n")
 	var authLines []string
 
 	if len(s.AuthMethods) > 0 {
@@ -1135,8 +1136,8 @@ func (m Model) renderDetail(width, height int) string {
 			}
 
 			// 构建行内容 - 简单格式，避免emoji宽度问题
-			// 格式: 2空格 + 序号. + 空格 + 图标 + 空格 + 类型 + 详情
-			line := fmt.Sprintf("  %d. %s %s", i+1, authIcon, authTypeStr)
+			// 格式: 序号. + 空格 + 图标 + 空格 + 类型 + 详情
+			line := fmt.Sprintf("%d. %s %s", i+1, authIcon, authTypeStr)
 			if detail != "" {
 				line += detail
 			}
@@ -1178,8 +1179,8 @@ func (m Model) renderDetail(width, height int) string {
 		}
 
 		// 构建行内容 - 简单格式，避免emoji宽度问题
-		// 格式: 2空格 + 序号. + 空格 + 图标 + 空格 + 类型 + 详情
-		line := fmt.Sprintf("  1. %s %s", authIcon, authTypeStr)
+		// 格式: 序号. + 空格 + 图标 + 空格 + 类型 + 详情
+		line := fmt.Sprintf("1. %s %s", authIcon, authTypeStr)
 		if detail != "" {
 			line += detail
 		}
@@ -1196,6 +1197,7 @@ func (m Model) renderDetail(width, height int) string {
 	// 显示 SSH Agent keys（如果是 Agent 认证）
 	if s.AuthType == session.AuthTypeAgent {
 		content.WriteString(detailKeyStyle.Render("SSH Agent Keys:\n"))
+		content.WriteString("\n")
 		// 使用缓存的 SSH Agent keys
 		var keys []internalssh.AgentKeyInfo
 		var err error
@@ -1228,6 +1230,7 @@ func (m Model) renderDetail(width, height int) string {
 
 	if s.Description != "" {
 		content.WriteString(detailKeyStyle.Render("Description:\n"))
+		content.WriteString("\n")
 		content.WriteString(s.Description + "\n\n")
 	}
 
