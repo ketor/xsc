@@ -226,6 +226,34 @@ Feature: TUI 模式下的 SSH 会话管理
 
   # ========== 错误处理 ==========
 
+  Scenario: SSH 连接超时
+    Given TUI 已启动
+    And 选中了会话 "prod/db/master"
+    And 该主机网络不可达
+    When 用户按下 "Enter"
+    Then 等待最多 10 秒
+    And 显示错误 "connection timeout"
+    And 返回 TUI 界面
+
+  Scenario: 多种认证方式按顺序尝试
+    Given SecureCRT 会话配置了多种认证方式
+      | 顺序 | 方式        |
+      | 1    | publickey   |
+      | 2    | password    |
+      | 3    | keyboard-interactive |
+    When 连接该会话
+    And publickey 认证失败
+    Then 自动尝试 password 认证
+    And 如果 password 也失败，尝试 keyboard-interactive
+
+  Scenario: 自动发现默认 SSH 密钥
+    Given SecureCRT 会话使用全局公钥
+    And 未指定具体密钥文件
+    When 连接该会话
+    Then 自动查找 ~/.ssh/ 下的默认密钥
+    And 按顺序尝试：id_ed25519、id_ecdsa、id_rsa、id_dsa
+    And 使用第一个可用的密钥
+
   Scenario: 连接失败显示错误
     Given TUI 已启动
     And 选中了无效会话
@@ -404,6 +432,38 @@ Feature: TUI 界面展示
     Given 正在进行搜索
     Then 搜索框显示提示 "(Esc:clear Enter:confirm)"
     And 底部状态栏显示过滤状态
+
+  Scenario: 显示多种认证方式
+    Given 选中了 SecureCRT 会话
+    And 该会话配置了多种认证方式
+    Then 右侧详情面板显示 "Auth Methods:" 标题
+    And 列出所有认证方式及顺序：
+      | 序号 | 图标 | 类型                  | 详情          |
+      | 1    | 🔐   | Public Key            | (global)      |
+      | 2    | 🔑   | Password              | (encrypted)   |
+      | 3    | ⌨️   | Keyboard Interactive  |               |
+      | 4    | 🎫   | GSSAPI                |               |
+    And 标题和内容之间有空白行
+
+  Scenario: 切换密码显示
+    Given 选中了密码认证会话
+    And 默认显示 "(encrypted)" 或 "(********)"
+    When 用户按下 ":" 进入命令模式
+    And 输入 "pw"
+    And 按下 Enter
+    Then 密码显示为明文
+    When 再次执行 ":pw" 命令
+    Then 密码恢复隐藏显示
+
+  Scenario: 命令自动补全
+    Given TUI 已启动
+    When 用户按下 ":" 进入命令模式
+    And 输入 "p"
+    And 按下 Tab
+    Then 自动补全为 "pw"
+    And 输入 "q"
+    And 按下 Tab
+    Then 自动补全为 "quit"
 
   Scenario: 实时解密密码显示
     Given 选中了 SecureCRT 会话

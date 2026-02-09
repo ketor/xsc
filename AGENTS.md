@@ -238,6 +238,14 @@ ssh:
 | `e` | 编辑选中会话 |
 | `c` | 重命名会话 |
 | `D` | 删除选中会话（需输入 YES 确认） |
+| `c` | 重命名会话 |
+
+### 命令模式 (:)
+| 按键 | 功能 |
+|------|------|
+| `:q` / `:quit` | 退出程序 |
+| `:noh` | 清除搜索高亮 |
+| `:pw` | 切换密码明文/密文显示 |
 
 ### 退出
 | 按键 | 功能 |
@@ -246,11 +254,19 @@ ssh:
 | `Ctrl+c` | 强制退出 |
 | `?` | 显示帮助 |
 
+### TUI 详情面板
+- 显示会话的多种认证方式及顺序（SecureCRT 风格）
+- 支持密码明文/密文切换显示（`:pw` 命令）
+- 认证类型图标：🔑 Password、🔐 Public Key、🤖 SSH Agent、⌨️ Keyboard Interactive、🎫 GSSAPI
+- Public Key 显示密钥路径或 `(global)` 表示使用默认密钥
+
 ## SecureCRT 集成
 
 ### 支持的功能
 - 解析 SecureCRT `.ini` 会话文件
 - 解密 V2 格式加密密码（prefix 02 和 03）
+- 支持多种认证方式按优先级顺序尝试（password、publickey、keyboard-interactive、gssapi）
+- 自动发现默认 SSH 密钥：当 SecureCRT 使用全局公钥时，自动查找 `~/.ssh/` 下的默认密钥（id_ed25519、id_ecdsa、id_rsa 等）
 - 延迟解密：密码在需要时才解密，提高启动速度
 - 导入命令将 SecureCRT 会话转换为本地 YAML 格式
 
@@ -271,6 +287,8 @@ ssh:
 - SSH 连接结束后自动恢复 TUI
 - 支持窗口大小调整（SIGWINCH 信号处理）
 - 支持终端 raw 模式切换
+- 连接超时：10 秒超时防止卡住（使用 `net.DialTimeout`）
+- 多认证方式：按配置顺序尝试多种认证方式（password、key、agent、keyboard-interactive）
 
 ### 性能优化
 - SSH Agent 密钥缓存：详情面板中缓存 Agent 密钥查询结果
