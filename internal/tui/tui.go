@@ -1098,7 +1098,6 @@ func (m Model) renderDetail(width, height int) string {
 	if len(s.AuthMethods) > 0 {
 		// 显示多种认证方式（SecureCRT 风格）
 		for i, am := range s.AuthMethods {
-			order := fmt.Sprintf("%d.", i+1)
 			authIcon := m.getAuthIcon(am.Type)
 			authTypeStr := m.formatAuthType(am.Type)
 
@@ -1121,13 +1120,13 @@ func (m Model) renderDetail(width, height int) string {
 				}
 			}
 
-			// 构建行内容 - 使用固定宽度确保对齐
-			// 格式: 2空格 + 序号(占3字符宽度) + 1空格 + 图标(占2字符宽度) + 1空格 + 类型 + 详情
+			// 构建行内容 - 简单格式，避免emoji宽度问题
+			// 格式: 2空格 + 序号. + 空格 + 图标 + 空格 + 类型 + 详情
+			line := fmt.Sprintf("  %d. %s %s", i+1, authIcon, authTypeStr)
 			if detail != "" {
-				authLines = append(authLines, fmt.Sprintf("  %-3s %-2s %s%s", order, authIcon, authTypeStr, detail))
-			} else {
-				authLines = append(authLines, fmt.Sprintf("  %-3s %-2s %s", order, authIcon, authTypeStr))
+				line += detail
 			}
+			authLines = append(authLines, line)
 		}
 	} else {
 		// 显示单一认证方式（原生 XSC 风格）
@@ -1164,13 +1163,13 @@ func (m Model) renderDetail(width, height int) string {
 			}
 		}
 
-		// 构建行内容 - 使用固定宽度确保对齐
-		// 格式: 2空格 + 序号(占3字符宽度) + 1空格 + 图标(占2字符宽度) + 1空格 + 类型 + 详情
+		// 构建行内容 - 简单格式，避免emoji宽度问题
+		// 格式: 2空格 + 序号. + 空格 + 图标 + 空格 + 类型 + 详情
+		line := fmt.Sprintf("  1. %s %s", authIcon, authTypeStr)
 		if detail != "" {
-			authLines = append(authLines, fmt.Sprintf("  %-3s %-2s %s%s", "1.", authIcon, authTypeStr, detail))
-		} else {
-			authLines = append(authLines, fmt.Sprintf("  %-3s %-2s %s", "1.", authIcon, authTypeStr))
+			line += detail
 		}
+		authLines = append(authLines, line)
 	}
 
 	// 统一渲染所有行
