@@ -1121,11 +1121,11 @@ func (m Model) renderDetail(width, height int) string {
 				}
 			}
 
-			// 构建行内容
+			// 构建行内容 - 确保格式统一：2空格 + 序号 + 1空格 + 图标 + 1空格 + 类型 + 详情
 			if detail != "" {
-				authLines = append(authLines, fmt.Sprintf("  %s %s%s%s", order, authIcon, authTypeStr, detail))
+				authLines = append(authLines, fmt.Sprintf("  %s %s %s%s", order, authIcon, authTypeStr, detail))
 			} else {
-				authLines = append(authLines, fmt.Sprintf("  %s %s%s", order, authIcon, authTypeStr))
+				authLines = append(authLines, fmt.Sprintf("  %s %s %s", order, authIcon, authTypeStr))
 			}
 		}
 	} else {
@@ -1163,11 +1163,11 @@ func (m Model) renderDetail(width, height int) string {
 			}
 		}
 
-		// 构建行内容
+		// 构建行内容 - 确保格式统一：2空格 + 序号 + 1空格 + 图标 + 1空格 + 类型 + 详情
 		if detail != "" {
-			authLines = append(authLines, fmt.Sprintf("  1. %s%s%s", authIcon, authTypeStr, detail))
+			authLines = append(authLines, fmt.Sprintf("  1. %s %s%s", authIcon, authTypeStr, detail))
 		} else {
-			authLines = append(authLines, fmt.Sprintf("  1. %s%s", authIcon, authTypeStr))
+			authLines = append(authLines, fmt.Sprintf("  1. %s %s", authIcon, authTypeStr))
 		}
 	}
 
@@ -1230,17 +1230,17 @@ func (m Model) renderDetail(width, height int) string {
 func (m Model) getAuthIcon(authType string) string {
 	switch authType {
 	case "password":
-		return "🔑 "
+		return "🔑"
 	case "key", "publickey":
-		return "🔐 "
+		return "🔐"
 	case "agent":
-		return "🤖 "
+		return "🤖"
 	case "keyboard-interactive":
-		return "⌨️  "
+		return "⌨️"
 	case "gssapi":
-		return "🎫 "
+		return "🎫"
 	default:
-		return "🔓 "
+		return "🔓"
 	}
 }
 
