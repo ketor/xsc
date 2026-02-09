@@ -271,3 +271,62 @@ func TestRenderHelp(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderNodeSecureCRTStyles 测试 SecureCRT 会话的视觉区分
+func TestRenderNodeSecureCRTStyles(t *testing.T) {
+	m := initialModel()
+	m.width = 120
+	m.height = 40
+
+	// 创建测试节点
+	// SecureCRT 目录
+	scDir := &session.SessionNode{
+		Name:     "securecrt",
+		IsDir:    true,
+		Expanded: true,
+		Children: make([]*session.SessionNode, 0),
+	}
+
+	// SecureCRT 会话
+	scSession := &session.SessionNode{
+		Name:    "prod-server",
+		IsDir:   false,
+		Session: &session.Session{Valid: true},
+	}
+	scDir.Children = append(scDir.Children, scSession)
+	scSession.SetParent(scDir)
+
+	// 本地会话
+	localSession := &session.SessionNode{
+		Name:    "local-server",
+		IsDir:   false,
+		Session: &session.Session{Valid: true},
+	}
+
+	// 设置父节点
+	scDir.SetParent(nil)
+
+	// 测试 SecureCRT 目录渲染
+	scDirRendered := m.renderNode(scDir, false)
+	if !strings.Contains(scDirRendered, "[CRT]") {
+		t.Error("SecureCRT directory should contain [CRT] marker")
+	}
+
+	// 测试 SecureCRT 会话渲染 - 应该包含 🔒 图标
+	scSessionRendered := m.renderNode(scSession, false)
+	if !strings.Contains(scSessionRendered, "🔒") {
+		t.Error("SecureCRT session should contain 🔒 icon")
+	}
+
+	// 测试本地会话渲染 - 不应该有 🔒 图标
+	localRendered := m.renderNode(localSession, false)
+	if strings.Contains(localRendered, "🔒") {
+		t.Error("Local session should not contain 🔒 icon")
+	}
+
+	// 测试选中状态的 SecureCRT 会话
+	scSelected := m.renderNode(scSession, true)
+	if !strings.Contains(scSelected, "🔒") {
+		t.Error("Selected SecureCRT session should still show 🔒 icon")
+	}
+}

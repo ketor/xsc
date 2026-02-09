@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wc:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(make build:*)",
+      "Bash(make test:*)",
+      "Bash(make fmt:*)",
+      "Bash(make vet:*)"
+    ]
+  }
+}

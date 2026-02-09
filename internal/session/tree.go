@@ -136,6 +136,18 @@ func (n *SessionNode) IsLeaf() bool {
 	return !n.IsDir
 }
 
+// IsSecureCRT 检查节点或其祖先是否为 SecureCRT 会话
+func (n *SessionNode) IsSecureCRT() bool {
+	current := n
+	for current != nil {
+		if current.Name == "securecrt" {
+			return true
+		}
+		current = current.Parent
+	}
+	return false
+}
+
 // GetPath 返回从根节点到当前节点的路径
 func (n *SessionNode) GetPath() string {
 	if n.Parent == nil {

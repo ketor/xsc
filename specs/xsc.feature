@@ -149,8 +149,32 @@ Feature: TUI 模式下的 SSH 会话管理
     Given TUI 已启动
     And 选中了会话 "prod/db/master"
     When 用户按下 "D"
+    Then 显示删除确认提示 "⚠️  Warning: This action cannot be undone!"
+    And 显示确认输入框 "Type YES to confirm:"
+    When 用户输入 "YES"
+    And 按下 Enter
     Then 删除该会话文件
     And 从列表中移除
+
+  Scenario: 取消删除会话
+    Given TUI 已启动
+    And 选中了会话 "prod/db/master"
+    When 用户按下 "D"
+    Then 显示删除确认提示
+    When 用户按下 "Esc"
+    Then 取消删除操作
+    And 会话文件未被删除
+
+  Scenario: 重命名会话
+    Given TUI 已启动
+    And 选中了会话 "prod/db/master"
+    When 用户按下 "c"
+    Then 显示重命名输入框
+    And 输入框预填充当前文件名 "master"
+    When 用户输入 "new-master"
+    And 按下 Enter
+    Then 会话文件被重命名为 "new-master.yaml"
+    And 会话列表更新显示 "new-master"
 
   # ========== 信息显示 ==========
 

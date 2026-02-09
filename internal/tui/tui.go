@@ -40,6 +40,14 @@ var (
 	invalidStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#fb4934"))
 
+	// SecureCRT 样式（使用紫色系区分）
+	securecrtFolderStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#b16286")).
+				Bold(true)
+
+	securecrtFileStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#d3869b"))
+
 	lineNumberStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#665c54")).
 			Width(4).
@@ -168,6 +176,7 @@ type KeyMap struct {
 	Edit         key.Binding
 	New          key.Binding
 	Delete       key.Binding
+	Rename       key.Binding
 	Quit         key.Binding
 	Help         key.Binding
 	// 折叠相关
@@ -236,6 +245,10 @@ func DefaultKeyMap() KeyMap {
 		Delete: key.NewBinding(
 			key.WithKeys("D"),
 			key.WithHelp("D", "delete"),
+		),
+		Rename: key.NewBinding(
+			key.WithKeys("c"),
+			key.WithHelp("c", "rename"),
 		),
 		Quit: key.NewBinding(
 			key.WithKeys("ctrl+c"),
@@ -311,6 +324,21 @@ type Model struct {
 	agentKeyCache *AgentKeyCache
 	lastKeyG      bool // 用于检测 'gg' 快捷键
 	showPassword  bool // 是否显示密码明文，默认隐藏
+
+	// 新建会话相关字段
+	newSessionMode  bool            // 是否处于新建会话的文件名输入模式
+	newSessionInput textinput.Model // 文件名输入框
+	newSessionDir   string          // 新会话要保存的目录
+
+	// 重命名会话相关字段
+	renameMode       bool                 // 是否处于重命名会话的文件名输入模式
+	renameInput      textinput.Model      // 新文件名输入框
+	renameTargetNode *session.SessionNode // 要重命名的目标节点
+
+	// 删除会话确认相关字段
+	deleteConfirmMode  bool                 // 是否处于删除确认模式
+	deleteConfirmInput textinput.Model      // 确认输入框
+	deleteTargetNode   *session.SessionNode // 要删除的目标节点
 }
 
 // 初始化 Model
@@ -331,11 +359,35 @@ func initialModel() Model {
 	lineNumInput.CharLimit = 20
 	lineNumInput.Width = 20
 
+	// 初始化新建会话文件名输入框
+	newSessionInput := textinput.New()
+	newSessionInput.Placeholder = "session-name"
+	newSessionInput.Prompt = "Name: "
+	newSessionInput.CharLimit = 50
+	newSessionInput.Width = 30
+
+	// 初始化重命名会话文件名输入框
+	renameInput := textinput.New()
+	renameInput.Placeholder = "new-name"
+	renameInput.Prompt = "Rename to: "
+	renameInput.CharLimit = 50
+	renameInput.Width = 30
+
+	// 初始化删除确认输入框
+	deleteConfirmInput := textinput.New()
+	deleteConfirmInput.Placeholder = ""
+	deleteConfirmInput.Prompt = "Type YES to confirm: "
+	deleteConfirmInput.CharLimit = 10
+	deleteConfirmInput.Width = 30
+
 	return Model{
-		keys:         keys,
-		help:         help.New(),
-		searchInput:  searchInput,
-		lineNumInput: lineNumInput,
+		keys:               keys,
+		help:               help.New(),
+		searchInput:        searchInput,
+		lineNumInput:       lineNumInput,
+		newSessionInput:    newSessionInput,
+		renameInput:        renameInput,
+		deleteConfirmInput: deleteConfirmInput,
 	}
 }
 
@@ -388,6 +440,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if m.lineNumMode {
 			return m.handleLineNumInput(msg)
+		}
+
+		if m.newSessionMode {
+			return m.handleNewSessionInput(msg)
+		}
+
+		if m.renameMode {
+			return m.handleRenameInput(msg)
+		}
+
+		if m.deleteConfirmMode {
+			return m.handleDeleteConfirmInput(msg)
 		}
 
 		// 普通模式下，Esc 清空搜索过滤（如果有过滤条件）
@@ -520,7 +584,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.lineNumBuffer = ""
 			m.lastKeyG = false
-			return m, m.newSession()
+			return m, m.prepareNewSession()
 
 		// Vim: N - 查找上一个
 		case msg.String() == "N":
@@ -588,7 +652,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case key.Matches(msg, m.keys.Edit):
 			selected := m.getSelectedNode()
-			if selected != nil && !selected.IsDir && selected.Session != nil {
+			if selected == nil {
+				m.errorMessage = "No item selected"
+				m.showError = true
+			} else if selected.IsDir {
+				m.errorMessage = "Cannot edit a directory"
+				m.showError = true
+			} else if selected.IsSecureCRT() {
+				m.errorMessage = "Cannot edit SecureCRT session (read-only)"
+				m.showError = true
+			} else if selected.Session == nil {
+				m.errorMessage = "No session data available"
+				m.showError = true
+			} else if selected.Session.FilePath == "" {
+				m.errorMessage = "Session file path is empty"
+				m.showError = true
+			} else {
 				return m, m.execEditCommand(selected.Session)
 			}
 			m.lineNumBuffer = ""
@@ -597,8 +676,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case key.Matches(msg, m.keys.Delete):
 			selected := m.getSelectedNode()
-			if selected != nil && !selected.IsDir {
-				return m, m.deleteSession(selected)
+			if selected == nil {
+				m.errorMessage = "No item selected"
+				m.showError = true
+			} else if selected.IsDir {
+				m.errorMessage = "Cannot delete a directory"
+				m.showError = true
+			} else if selected.IsSecureCRT() {
+				m.errorMessage = "Cannot delete SecureCRT session (read-only)"
+				m.showError = true
+			} else if selected.Session == nil {
+				m.errorMessage = "No session data available"
+				m.showError = true
+			} else {
+				return m, m.prepareDeleteConfirm(selected)
+			}
+			m.lineNumBuffer = ""
+			m.lastKeyG = false
+			return m, nil
+
+		case key.Matches(msg, m.keys.Rename):
+			selected := m.getSelectedNode()
+			if selected == nil {
+				m.errorMessage = "No item selected"
+				m.showError = true
+			} else if selected.IsDir {
+				m.errorMessage = "Cannot rename a directory"
+				m.showError = true
+			} else if selected.IsSecureCRT() {
+				m.errorMessage = "Cannot rename SecureCRT session (read-only)"
+				m.showError = true
+			} else if selected.Session == nil {
+				m.errorMessage = "No session data available"
+				m.showError = true
+			} else if selected.Session.FilePath == "" {
+				m.errorMessage = "Session file path is empty"
+				m.showError = true
+			} else {
+				return m, m.prepareRenameSession(selected)
 			}
 			m.lineNumBuffer = ""
 			m.lastKeyG = false
@@ -710,6 +825,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return tea.WindowSizeMsg{Width: m.width, Height: m.height}
 			},
 		)
+
+	case newSessionEditorCompleteMsg:
+		// 新建会话编辑器关闭，处理结果并重新加载
+		return m, tea.Batch(
+			m.handleNewSessionComplete(msg.err),
+			tea.EnterAltScreen,
+			func() tea.Msg {
+				return tea.WindowSizeMsg{Width: m.width, Height: m.height}
+			},
+		)
+
+	case prepareNewSessionMsg:
+		// 进入新建会话模式
+		m.newSessionMode = true
+		m.newSessionDir = msg.dir
+		m.newSessionInput.SetValue("")
+		m.newSessionInput.Focus()
+		return m, textinput.Blink
+
+	case prepareRenameSessionMsg:
+		// 进入重命名会话模式
+		if msg.node != nil && msg.node.Session != nil {
+			m.renameMode = true
+			m.renameTargetNode = msg.node
+			// 预设当前文件名（不含扩展名）
+			currentName := msg.node.Name
+			m.renameInput.SetValue(currentName)
+			m.renameInput.Focus()
+			return m, textinput.Blink
+		}
+		return m, nil
+
+	case prepareDeleteConfirmMsg:
+		// 进入删除确认模式
+		if msg.node != nil && msg.node.Session != nil {
+			m.deleteConfirmMode = true
+			m.deleteTargetNode = msg.node
+			m.deleteConfirmInput.SetValue("")
+			m.deleteConfirmInput.Focus()
+			return m, textinput.Blink
+		}
+		return m, nil
 	}
 
 	var cmd tea.Cmd
@@ -763,6 +920,21 @@ func (m Model) View() string {
 	if m.lineNumMode {
 		lineNumBar := m.renderLineNumBar()
 		return lipgloss.JoinVertical(lipgloss.Left, content, statusBar, lineNumBar)
+	}
+
+	if m.newSessionMode {
+		newSessionBar := m.renderNewSessionBar()
+		return lipgloss.JoinVertical(lipgloss.Left, content, statusBar, newSessionBar)
+	}
+
+	if m.renameMode {
+		renameBar := m.renderRenameBar()
+		return lipgloss.JoinVertical(lipgloss.Left, content, statusBar, renameBar)
+	}
+
+	if m.deleteConfirmMode {
+		deleteConfirmBar := m.renderDeleteConfirmBar()
+		return lipgloss.JoinVertical(lipgloss.Left, content, statusBar, deleteConfirmBar)
 	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, content, statusBar)
@@ -827,6 +999,7 @@ func (m Model) renderNode(node *session.SessionNode, selected bool) string {
 
 	var icon string
 	var name string
+	isSecureCRT := node.IsSecureCRT()
 
 	if node.IsDir {
 		if node.Expanded {
@@ -834,11 +1007,23 @@ func (m Model) renderNode(node *session.SessionNode, selected bool) string {
 		} else {
 			icon = "▸ "
 		}
-		name = folderStyle.Render(node.Name + "/")
+		// SecureCRT 目录使用特殊样式
+		if isSecureCRT {
+			name = securecrtFolderStyle.Render("[CRT] " + node.Name + "/")
+		} else {
+			name = folderStyle.Render(node.Name + "/")
+		}
 	} else {
-		icon = "  "
+		// SecureCRT 会话使用锁定图标和特殊颜色
+		if isSecureCRT {
+			icon = "🔒 "
+		} else {
+			icon = "  "
+		}
 		if node.Session != nil && !node.Session.Valid {
 			name = invalidStyle.Render(node.Name + " [invalid]")
+		} else if isSecureCRT {
+			name = securecrtFileStyle.Render(node.Name)
 		} else {
 			name = fileStyle.Render(node.Name)
 		}
@@ -1044,6 +1229,31 @@ func (m Model) renderLineNumBar() string {
 	return searchStyle.Width(m.width).Render(bar)
 }
 
+// renderNewSessionBar 渲染新建会话文件名输入栏
+func (m Model) renderNewSessionBar() string {
+	hint := cmdHintStyle.Render("(Enter:确认 Esc:取消)")
+	bar := m.newSessionInput.View() + "  " + hint
+	return searchStyle.Width(m.width).Render(bar)
+}
+
+// renderRenameBar 渲染重命名会话文件名输入栏
+func (m Model) renderRenameBar() string {
+	hint := cmdHintStyle.Render("(Enter:确认 Esc:取消)")
+	bar := m.renameInput.View() + "  " + hint
+	return searchStyle.Width(m.width).Render(bar)
+}
+
+// renderDeleteConfirmBar 渲染删除确认栏
+func (m Model) renderDeleteConfirmBar() string {
+	warningStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#fb4934")).
+		Bold(true)
+
+	warning := warningStyle.Render("⚠️  Warning: This action cannot be undone!")
+	bar := warning + "  " + m.deleteConfirmInput.View()
+	return searchStyle.Width(m.width).Render(bar)
+}
+
 // renderHelp 渲染自定义帮助视图
 func (m Model) renderHelp() string {
 	var b strings.Builder
@@ -1093,7 +1303,8 @@ func (m Model) renderHelp() string {
 		{"Enter", "连接到选中会话"},
 		{"e", "编辑会话配置"},
 		{"n", "新建会话"},
-		{"D", "删除会话"},
+		{"D", "删除会话 (输入 YES 确认)"},
+		{"c", "重命名会话"},
 	})
 
 	// 从命令注册表自动生成命令部分
@@ -1311,7 +1522,294 @@ func (m Model) newSession() tea.Cmd {
 	}
 }
 
-// deleteSession 删除会话
+// prepareNewSessionMsg 触发进入新建会话模式的消息
+type prepareNewSessionMsg struct {
+	dir string
+}
+
+// prepareNewSession 准备新建会话，返回消息触发状态改变
+func (m Model) prepareNewSession() tea.Cmd {
+	return func() tea.Msg {
+		selected := m.getSelectedNode()
+		var dir string
+
+		if selected != nil {
+			// 检查是否在 SecureCRT 目录下
+			if selected.IsSecureCRT() {
+				return showErrorMsg{err: fmt.Errorf("cannot create session in SecureCRT directory (read-only)")}
+			}
+
+			if selected.IsDir {
+				// 如果选中的是目录，在该目录下创建
+				dir = filepath.Join(m.sessionsDir, selected.GetPath())
+			} else if selected.Parent != nil {
+				// 如果选中的是会话文件，在父目录下创建
+				parentPath := selected.Parent.GetPath()
+				// 根节点的GetPath返回"sessions"，需要特殊处理
+				if parentPath == "sessions" {
+					dir = m.sessionsDir
+				} else {
+					dir = filepath.Join(m.sessionsDir, parentPath)
+				}
+			}
+		}
+
+		if dir == "" {
+			dir = m.sessionsDir
+		}
+
+		return prepareNewSessionMsg{dir: dir}
+	}
+}
+
+// handleNewSessionInput 处理新建会话的文件名输入
+func (m Model) handleNewSessionInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		// 取消新建会话
+		m.newSessionMode = false
+		m.newSessionInput.SetValue("")
+		m.newSessionDir = ""
+		return m, nil
+
+	case tea.KeyEnter:
+		// 确认文件名，开始创建会话
+		filename := m.newSessionInput.Value()
+		if filename == "" {
+			m.errorMessage = "Filename cannot be empty"
+			m.showError = true
+			m.newSessionMode = false
+			m.newSessionInput.SetValue("")
+			return m, nil
+		}
+
+		// 确保文件名有.yaml后缀
+		if !strings.HasSuffix(filename, ".yaml") && !strings.HasSuffix(filename, ".yml") {
+			filename = filename + ".yaml"
+		}
+
+		m.newSessionMode = false
+		m.newSessionInput.SetValue("")
+		return m, m.createNewSession(m.newSessionDir, filename)
+
+	default:
+		var cmd tea.Cmd
+		m.newSessionInput, cmd = m.newSessionInput.Update(msg)
+		return m, cmd
+	}
+}
+
+// prepareRenameSessionMsg 触发进入重命名会话模式的消息
+type prepareRenameSessionMsg struct {
+	node *session.SessionNode
+}
+
+// prepareRenameSession 准备重命名会话，返回消息触发状态改变
+func (m Model) prepareRenameSession(node *session.SessionNode) tea.Cmd {
+	return func() tea.Msg {
+		return prepareRenameSessionMsg{node: node}
+	}
+}
+
+// handleRenameInput 处理重命名会话的文件名输入
+func (m Model) handleRenameInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		// 取消重命名
+		m.renameMode = false
+		m.renameInput.SetValue("")
+		m.renameTargetNode = nil
+		return m, nil
+
+	case tea.KeyEnter:
+		// 确认新文件名
+		newName := m.renameInput.Value()
+		if newName == "" {
+			m.errorMessage = "Filename cannot be empty"
+			m.showError = true
+			m.renameMode = false
+			m.renameInput.SetValue("")
+			m.renameTargetNode = nil
+			return m, nil
+		}
+
+		// 确保文件名有.yaml后缀
+		if !strings.HasSuffix(newName, ".yaml") && !strings.HasSuffix(newName, ".yml") {
+			newName = newName + ".yaml"
+		}
+
+		node := m.renameTargetNode
+		m.renameMode = false
+		m.renameInput.SetValue("")
+		m.renameTargetNode = nil
+
+		if node != nil && node.Session != nil {
+			return m, m.renameSession(node, newName)
+		}
+		return m, nil
+
+	default:
+		var cmd tea.Cmd
+		m.renameInput, cmd = m.renameInput.Update(msg)
+		return m, cmd
+	}
+}
+
+// renameSession 执行会话重命名
+func (m Model) renameSession(node *session.SessionNode, newName string) tea.Cmd {
+	return func() tea.Msg {
+		if node.Session == nil || node.Session.FilePath == "" {
+			return showErrorMsg{err: fmt.Errorf("invalid session")}
+		}
+
+		oldPath := node.Session.FilePath
+		dir := filepath.Dir(oldPath)
+		newPath := filepath.Join(dir, newName)
+
+		// 检查目标文件是否已存在
+		if _, err := os.Stat(newPath); err == nil {
+			return showErrorMsg{err: fmt.Errorf("file already exists: %s", newName)}
+		}
+
+		// 执行重命名
+		if err := os.Rename(oldPath, newPath); err != nil {
+			return showErrorMsg{err: fmt.Errorf("failed to rename: %w", err)}
+		}
+
+		return editorCompleteMsg{err: nil}
+	}
+}
+
+// createNewSession 创建新会话 - 第一步：准备临时文件
+type newSessionContext struct {
+	tempPath   string
+	targetPath string
+}
+
+var currentNewSession *newSessionContext
+
+func (m Model) createNewSession(dir, filename string) tea.Cmd {
+	targetPath := filepath.Join(dir, filename)
+
+	// 检查文件是否已存在
+	if _, err := os.Stat(targetPath); err == nil {
+		return func() tea.Msg {
+			return showErrorMsg{err: fmt.Errorf("file already exists: %s", filename)}
+		}
+	}
+
+	// 创建临时文件
+	tempFile, err := os.CreateTemp("", "xsc-new-session-*.yaml")
+	if err != nil {
+		return func() tea.Msg {
+			return showErrorMsg{err: fmt.Errorf("failed to create temp file: %w", err)}
+		}
+	}
+	tempPath := tempFile.Name()
+	tempFile.Close()
+
+	// 写入模板内容
+	template := &session.Session{
+		Host:     "example.com",
+		Port:     22,
+		User:     "root",
+		AuthType: "agent",
+	}
+
+	if err := session.SaveSession(template, tempPath); err != nil {
+		os.Remove(tempPath)
+		return func() tea.Msg {
+			return showErrorMsg{err: fmt.Errorf("failed to write template: %w", err)}
+		}
+	}
+
+	// 保存上下文供后续使用
+	currentNewSession = &newSessionContext{
+		tempPath:   tempPath,
+		targetPath: targetPath,
+	}
+
+	// 使用 tea.Exec 打开编辑器（这会暂停 TUI）
+	return tea.Exec(newSessionEditorProcess{tempPath: tempPath}, func(err error) tea.Msg {
+		return newSessionEditorCompleteMsg{err: err}
+	})
+}
+
+// newSessionEditorProcess 实现 tea.Exec 接口用于新建会话
+type newSessionEditorProcess struct {
+	tempPath string
+}
+
+func (p newSessionEditorProcess) Run() error {
+	editor := os.Getenv("EDITOR")
+	if editor == "" {
+		editor = "vi"
+	}
+
+	cmd := exec.Command(editor, p.tempPath)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	return cmd.Run()
+}
+
+func (p newSessionEditorProcess) SetStdin(r io.Reader)  {}
+func (p newSessionEditorProcess) SetStdout(w io.Writer) {}
+func (p newSessionEditorProcess) SetStderr(w io.Writer) {}
+
+// newSessionEditorCompleteMsg 新建会话编辑器完成消息
+type newSessionEditorCompleteMsg struct {
+	err error
+}
+
+// handleNewSessionComplete 处理新建会话编辑器关闭后的逻辑
+func (m Model) handleNewSessionComplete(err error) tea.Cmd {
+	return func() tea.Msg {
+		if currentNewSession == nil {
+			return editorCompleteMsg{err: nil}
+		}
+
+		tempPath := currentNewSession.tempPath
+		targetPath := currentNewSession.targetPath
+
+		// 清理全局上下文
+		defer func() {
+			currentNewSession = nil
+		}()
+
+		// 编辑器非正常退出（如 :q!），删除临时文件
+		if err != nil {
+			os.Remove(tempPath)
+			return editorCompleteMsg{err: nil} // 不显示错误，因为是用户取消
+		}
+
+		// 检查临时文件是否还有效（用户可能删除了内容）
+		if _, err := os.Stat(tempPath); os.IsNotExist(err) {
+			return editorCompleteMsg{err: nil}
+		}
+
+		// 验证文件内容
+		newSession, err := session.LoadSession(tempPath)
+		if err != nil {
+			os.Remove(tempPath)
+			return showErrorMsg{err: fmt.Errorf("failed to load session: %w", err)}
+		}
+
+		// 如果验证通过，移动到目标位置
+		if err := session.SaveSession(newSession, targetPath); err != nil {
+			os.Remove(tempPath)
+			return showErrorMsg{err: fmt.Errorf("failed to save session: %w", err)}
+		}
+
+		// 删除临时文件
+		os.Remove(tempPath)
+
+		return editorCompleteMsg{err: nil}
+	}
+}
+
+// deleteSession 删除会话（带确认）
 func (m Model) deleteSession(node *session.SessionNode) tea.Cmd {
 	return func() tea.Msg {
 		if node.Session == nil {
@@ -1320,10 +1818,60 @@ func (m Model) deleteSession(node *session.SessionNode) tea.Cmd {
 
 		err := os.Remove(node.Session.FilePath)
 		if err != nil {
-			return nil
+			return showErrorMsg{err: fmt.Errorf("failed to delete session: %w", err)}
 		}
 
 		return m.loadSessions()()
+	}
+}
+
+// prepareDeleteConfirmMsg 触发进入删除确认模式的消息
+type prepareDeleteConfirmMsg struct {
+	node *session.SessionNode
+}
+
+// prepareDeleteConfirm 准备删除确认，返回消息触发状态改变
+func (m Model) prepareDeleteConfirm(node *session.SessionNode) tea.Cmd {
+	return func() tea.Msg {
+		return prepareDeleteConfirmMsg{node: node}
+	}
+}
+
+// handleDeleteConfirmInput 处理删除确认的输入
+func (m Model) handleDeleteConfirmInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		// 取消删除
+		m.deleteConfirmMode = false
+		m.deleteConfirmInput.SetValue("")
+		m.deleteTargetNode = nil
+		return m, nil
+
+	case tea.KeyEnter:
+		// 检查确认输入
+		confirmation := m.deleteConfirmInput.Value()
+		if confirmation != "YES" {
+			m.deleteConfirmMode = false
+			m.deleteConfirmInput.SetValue("")
+			m.deleteTargetNode = nil
+			return m, nil
+		}
+
+		// 确认删除
+		node := m.deleteTargetNode
+		m.deleteConfirmMode = false
+		m.deleteConfirmInput.SetValue("")
+		m.deleteTargetNode = nil
+
+		if node != nil {
+			return m, m.deleteSession(node)
+		}
+		return m, nil
+
+	default:
+		var cmd tea.Cmd
+		m.deleteConfirmInput, cmd = m.deleteConfirmInput.Update(msg)
+		return m, cmd
 	}
 }
 
