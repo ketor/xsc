@@ -15,6 +15,14 @@ import (
 	"strings"
 )
 
+// AuthMethod represents an authentication method with its configuration
+type AuthMethod struct {
+	Type     string // "password", "publickey", "keyboard-interactive", "agent"
+	Password string // 解密后的密码（延迟解密时为空）
+	KeyFile  string // 公钥文件路径
+	Priority int    // 优先级顺序
+}
+
 // Session represents a SecureCRT session
 type Session struct {
 	Name              string
@@ -27,6 +35,9 @@ type Session struct {
 	Emulation         string
 	FilePath          string
 	Folder            string
+	AuthMethods       []AuthMethod // 认证方法列表，按优先级排序
+	UseAgent          bool         // 是否使用 SSH Agent
+	PublicKeyFile     string       // 公钥文件路径
 }
 
 // Config represents SecureCRT configuration
@@ -137,6 +148,18 @@ func parseSessionFile(filePath, basePath, masterPassword string) (*Session, erro
 				if session.EncryptedPassword == "" && value != "" {
 					session.EncryptedPassword = value
 				}
+			case "authentication":
+				// 认证方式列表，用逗号分隔，如 "password,publickey,keyboard-interactive"
+				if value != "" {
+					parseAuthMethods(session, value)
+				}
+			case "public key file":
+				session.PublicKeyFile = value
+			case "use agent":
+				// SecureCRT 使用 B: 类型表示布尔值，0 或 1
+				if value == "1" || strings.ToLower(value) == "true" {
+					session.UseAgent = true
+				}
 			case "protocol name":
 				session.Protocol = value
 			case "emulation":
@@ -166,6 +189,41 @@ func cleanKey(key string) string {
 	key = strings.Trim(key, "\"")
 
 	return strings.ToLower(key)
+}
+
+// parseAuthMethods parses the authentication string and populates AuthMethods list
+// SecureCRT format: "password,publickey,keyboard-interactive"
+func parseAuthMethods(session *Session, authString string) {
+	// Split by comma and trim spaces
+	methods := strings.Split(authString, ",")
+	for i, method := range methods {
+		method = strings.TrimSpace(strings.ToLower(method))
+		if method == "" {
+			continue
+		}
+
+		auth := AuthMethod{
+			Type:     method,
+			Priority: i,
+		}
+
+		// Map SecureCRT method names to internal names
+		switch method {
+		case "password":
+			// 密码将在延迟解密时填充
+			auth.Type = "password"
+		case "publickey", "rsa", "dsa", "ecdsa", "ed25519":
+			auth.Type = "publickey"
+		case "keyboard-interactive":
+			auth.Type = "keyboard-interactive"
+		case "gssapi", "gssapi-keyex", "gssapi-with-mic":
+			auth.Type = "gssapi"
+		case "none":
+			auth.Type = "none"
+		}
+
+		session.AuthMethods = append(session.AuthMethods, auth)
+	}
 }
 
 // decryptPasswordV2 decrypts a SecureCRT V2 encrypted password
@@ -325,15 +383,72 @@ func (s *Session) ConvertToXSCSession() map[string]interface{} {
 		"user": s.Username,
 	}
 
-	if s.Password != "" {
-		result["auth_type"] = "password"
-		result["password"] = s.Password
-	} else if s.EncryptedPassword != "" {
-		// 有加密密码但尚未解密，标记为 password 认证
-		result["auth_type"] = "password"
-		result["encrypted_password"] = s.EncryptedPassword
-	} else {
-		result["auth_type"] = "agent"
+	// 如果没有解析到认证方式列表，使用默认的检测逻辑
+	if len(s.AuthMethods) == 0 {
+		// 构建默认的认证方式列表（按优先级）
+		if s.PublicKeyFile != "" {
+			s.AuthMethods = append(s.AuthMethods, AuthMethod{
+				Type:     "publickey",
+				KeyFile:  s.PublicKeyFile,
+				Priority: 0,
+			})
+		}
+		if s.UseAgent {
+			s.AuthMethods = append(s.AuthMethods, AuthMethod{
+				Type:     "agent",
+				Priority: len(s.AuthMethods),
+			})
+		}
+		if s.EncryptedPassword != "" || s.Password != "" {
+			s.AuthMethods = append(s.AuthMethods, AuthMethod{
+				Type:     "password",
+				Priority: len(s.AuthMethods),
+			})
+		}
+		// 如果都没有，添加 agent 作为默认值
+		if len(s.AuthMethods) == 0 {
+			s.AuthMethods = append(s.AuthMethods, AuthMethod{
+				Type:     "agent",
+				Priority: 0,
+			})
+		}
+	}
+
+	// 填充密码到对应的认证方法（如果有加密密码）
+	if s.EncryptedPassword != "" {
+		for i := range s.AuthMethods {
+			if s.AuthMethods[i].Type == "password" {
+				s.AuthMethods[i].Password = s.EncryptedPassword
+				break
+			}
+		}
+	}
+
+	// 填充公钥文件路径到对应的认证方法
+	if s.PublicKeyFile != "" {
+		for i := range s.AuthMethods {
+			if s.AuthMethods[i].Type == "publickey" && s.AuthMethods[i].KeyFile == "" {
+				s.AuthMethods[i].KeyFile = s.PublicKeyFile
+				break
+			}
+		}
+	}
+
+	// 传递认证方法列表
+	result["auth_methods"] = s.AuthMethods
+
+	// 为了向后兼容，仍然提供首选的 auth_type
+	if len(s.AuthMethods) > 0 {
+		result["auth_type"] = s.AuthMethods[0].Type
+		if s.AuthMethods[0].Type == "password" {
+			if s.Password != "" {
+				result["password"] = s.Password
+			} else if s.EncryptedPassword != "" {
+				result["encrypted_password"] = s.EncryptedPassword
+			}
+		} else if s.AuthMethods[0].Type == "publickey" {
+			result["key_path"] = s.PublicKeyFile
+		}
 	}
 
 	return result

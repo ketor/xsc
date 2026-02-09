@@ -18,15 +18,25 @@ const (
 	AuthTypeAgent    AuthType = "agent"
 )
 
+// AuthMethod 定义认证方法配置
+type AuthMethod struct {
+	Type              string `yaml:"type"`                         // 认证类型: password, key, agent, keyboard-interactive
+	Priority          int    `yaml:"priority,omitempty"`           // 优先级顺序
+	Password          string `yaml:"password,omitempty"`           // 密码（用于 password 类型）
+	EncryptedPassword string `yaml:"encrypted_password,omitempty"` // 加密密码（SecureCRT 延迟解密）
+	KeyPath           string `yaml:"key_path,omitempty"`           // 密钥路径（用于 key 类型）
+}
+
 // Session 定义 SSH 会话配置
 type Session struct {
-	Host        string   `yaml:"host"`
-	Port        int      `yaml:"port"`
-	User        string   `yaml:"user"`
-	AuthType    AuthType `yaml:"auth_type"`
-	Password    string   `yaml:"password,omitempty"`
-	KeyPath     string   `yaml:"key_path,omitempty"`
-	Description string   `yaml:"description,omitempty"`
+	Host        string       `yaml:"host"`
+	Port        int          `yaml:"port"`
+	User        string       `yaml:"user"`
+	AuthType    AuthType     `yaml:"auth_type"`
+	Password    string       `yaml:"password,omitempty"`
+	KeyPath     string       `yaml:"key_path,omitempty"`
+	Description string       `yaml:"description,omitempty"`
+	AuthMethods []AuthMethod `yaml:"auth_methods,omitempty"` // 认证方法列表（按优先级）
 
 	// 内部字段
 	FilePath          string `yaml:"-"`

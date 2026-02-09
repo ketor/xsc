@@ -1091,66 +1091,102 @@ func (m Model) renderDetail(width, height int) string {
 	content.WriteString(detailKeyStyle.Render("User: "))
 	content.WriteString(detailValueStyle.Render(s.User) + "\n\n")
 
-	content.WriteString(detailKeyStyle.Render("Auth: "))
-	content.WriteString(detailValueStyle.Render(string(s.AuthType)) + "\n\n")
+	// 显示认证方式列表
+	content.WriteString(detailKeyStyle.Render("Auth Methods:\n"))
+	if len(s.AuthMethods) > 0 {
+		// 显示多种认证方式（SecureCRT 风格）
+		for i, am := range s.AuthMethods {
+			order := fmt.Sprintf("%d. ", i+1)
+			authIcon := m.getAuthIcon(am.Type)
+			authInfo := fmt.Sprintf("%s%s", authIcon, m.formatAuthType(am.Type))
 
-	// 根据认证类型显示详细信息
-	switch s.AuthType {
-	case session.AuthTypePassword:
-		if s.Password != "" {
-			content.WriteString(detailKeyStyle.Render("Password: "))
-			if m.showPassword {
-				content.WriteString(detailValueStyle.Render(s.Password) + "\n\n")
-			} else {
-				content.WriteString(detailValueStyle.Render("********") + "\n\n")
+			// 添加详细信息
+			switch am.Type {
+			case "password":
+				if m.showPassword && am.Password != "" {
+					authInfo += fmt.Sprintf(" (%s)", am.Password)
+				} else if am.EncryptedPassword != "" {
+					authInfo += " (encrypted)"
+				} else if am.Password != "" {
+					authInfo += " ********"
+				}
+			case "key", "publickey":
+				if am.KeyPath != "" {
+					authInfo += fmt.Sprintf(" (%s)", filepath.Base(am.KeyPath))
+				}
 			}
-		} else if s.EncryptedPassword != "" {
-			content.WriteString(detailKeyStyle.Render("Password: "))
-			if m.showPassword {
-				// 仅在显示密码时才解密
-				if err := s.ResolvePassword(); err == nil {
-					content.WriteString(detailValueStyle.Render(s.Password) + "\n\n")
+
+			content.WriteString(detailValueStyle.Render(fmt.Sprintf("  %s%s\n", order, authInfo)))
+		}
+		content.WriteString("\n")
+	} else {
+		// 显示单一认证方式（原生 XSC 风格）
+		content.WriteString(detailValueStyle.Render(fmt.Sprintf("  1. %s %s", m.getAuthIcon(string(s.AuthType)), m.formatAuthType(string(s.AuthType)))))
+
+		// 根据认证类型显示详细信息
+		switch s.AuthType {
+		case session.AuthTypePassword:
+			if s.Password != "" {
+				if m.showPassword {
+					content.WriteString(detailValueStyle.Render(fmt.Sprintf(" (%s)\n\n", s.Password)))
 				} else {
-					content.WriteString(invalidStyle.Render(fmt.Sprintf("(decrypt failed: %v)", err)) + "\n\n")
+					content.WriteString(detailValueStyle.Render(" (********)\n\n"))
+				}
+			} else if s.EncryptedPassword != "" {
+				if m.showPassword {
+					// 仅在显示密码时才解密
+					if err := s.ResolvePassword(); err == nil {
+						content.WriteString(detailValueStyle.Render(fmt.Sprintf(" (%s)\n\n", s.Password)))
+					} else {
+						content.WriteString(invalidStyle.Render(fmt.Sprintf(" (decrypt failed: %v)\n\n", err)))
+					}
+				} else {
+					content.WriteString(detailValueStyle.Render(" (********)\n\n"))
 				}
 			} else {
-				content.WriteString(detailValueStyle.Render("********") + "\n\n")
+				content.WriteString("\n\n")
 			}
-		}
-	case session.AuthTypeKey:
-		if s.KeyPath != "" {
-			content.WriteString(detailKeyStyle.Render("Key: "))
-			content.WriteString(detailValueStyle.Render(s.KeyPath) + "\n\n")
-		}
-	case session.AuthTypeAgent:
-		content.WriteString(detailKeyStyle.Render("SSH Agent Keys:\n"))
-		// 使用缓存的 SSH Agent keys
-		var keys []internalssh.AgentKeyInfo
-		var err error
-		if m.agentKeyCache != nil {
-			keys = m.agentKeyCache.keys
-			err = m.agentKeyCache.err
-		} else {
-			keys, err = internalssh.ListAgentKeys()
-			m.agentKeyCache = &AgentKeyCache{
-				keys: keys,
-				err:  err,
+		case session.AuthTypeKey:
+			if s.KeyPath != "" {
+				content.WriteString(detailValueStyle.Render(fmt.Sprintf(" (%s)\n\n", s.KeyPath)))
+			} else {
+				content.WriteString("\n\n")
 			}
-		}
-		if err != nil {
-			content.WriteString(invalidStyle.Render("  "+err.Error()) + "\n\n")
-		} else if len(keys) == 0 {
-			content.WriteString(detailValueStyle.Render("  (no keys loaded)") + "\n\n")
-		} else {
-			for _, k := range keys {
-				comment := k.Comment
-				if comment == "" {
-					comment = "(no comment)"
-				}
-				content.WriteString(detailValueStyle.Render(
-					fmt.Sprintf("  %s %s", k.Type, comment)) + "\n")
-			}
+		case session.AuthTypeAgent:
 			content.WriteString("\n")
+		}
+
+		// 显示 SSH Agent keys（如果是 Agent 认证）
+		if s.AuthType == session.AuthTypeAgent {
+			content.WriteString(detailKeyStyle.Render("SSH Agent Keys:\n"))
+			// 使用缓存的 SSH Agent keys
+			var keys []internalssh.AgentKeyInfo
+			var err error
+			if m.agentKeyCache != nil {
+				keys = m.agentKeyCache.keys
+				err = m.agentKeyCache.err
+			} else {
+				keys, err = internalssh.ListAgentKeys()
+				m.agentKeyCache = &AgentKeyCache{
+					keys: keys,
+					err:  err,
+				}
+			}
+			if err != nil {
+				content.WriteString(invalidStyle.Render("  "+err.Error()) + "\n\n")
+			} else if len(keys) == 0 {
+				content.WriteString(detailValueStyle.Render("  (no keys loaded)") + "\n\n")
+			} else {
+				for _, k := range keys {
+					comment := k.Comment
+					if comment == "" {
+						comment = "(no comment)"
+					}
+					content.WriteString(detailValueStyle.Render(
+						fmt.Sprintf("  %s %s", k.Type, comment)) + "\n")
+				}
+				content.WriteString("\n")
+			}
 		}
 	}
 
@@ -1168,6 +1204,42 @@ func (m Model) renderDetail(width, height int) string {
 		Width(width - 4).   // 减去边框和padding的宽度
 		Height(height - 2). // 减去边框的高度
 		Render(content.String())
+}
+
+// getAuthIcon 返回认证类型的图标
+func (m Model) getAuthIcon(authType string) string {
+	switch authType {
+	case "password":
+		return "🔑 "
+	case "key", "publickey":
+		return "🔐 "
+	case "agent":
+		return "🤖 "
+	case "keyboard-interactive":
+		return "⌨️  "
+	case "gssapi":
+		return "🎫 "
+	default:
+		return "🔓 "
+	}
+}
+
+// formatAuthType 格式化认证类型显示名称
+func (m Model) formatAuthType(authType string) string {
+	switch authType {
+	case "password":
+		return "Password"
+	case "key", "publickey":
+		return "Public Key"
+	case "agent":
+		return "SSH Agent"
+	case "keyboard-interactive":
+		return "Keyboard Interactive"
+	case "gssapi":
+		return "GSSAPI"
+	default:
+		return authType
+	}
 }
 
 // renderStatusBar 渲染状态栏

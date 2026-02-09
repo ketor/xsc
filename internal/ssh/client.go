@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/user/xsc/internal/securecrt"
 	"github.com/user/xsc/internal/session"
 	"github.com/user/xsc/pkg/config"
 	"golang.org/x/crypto/ssh"
@@ -21,6 +22,11 @@ import (
 func Connect(s *session.Session) error {
 	if !s.Valid {
 		return fmt.Errorf("invalid session: %v", s.Error)
+	}
+
+	// 如果有多种认证方式配置，按顺序尝试
+	if len(s.AuthMethods) > 0 {
+		return connectWithMultipleAuth(s)
 	}
 
 	// 延迟解密密码（SecureCRT 会话）
@@ -40,6 +46,49 @@ func Connect(s *session.Session) error {
 	default:
 		return fmt.Errorf("unsupported auth type: %s", s.AuthType)
 	}
+}
+
+// connectWithMultipleAuth 按顺序尝试多种认证方式
+func connectWithMultipleAuth(s *session.Session) error {
+	var lastErr error
+
+	for i, authMethod := range s.AuthMethods {
+		// 延迟解密密码（如果需要）
+		if authMethod.Type == "password" && authMethod.Password == "" && authMethod.EncryptedPassword != "" {
+			decrypted, err := securecrt.DecryptPassword(authMethod.EncryptedPassword, s.MasterPassword)
+			if err != nil {
+				lastErr = fmt.Errorf("auth method %d (%s): failed to decrypt password: %w", i+1, authMethod.Type, err)
+				continue
+			}
+			authMethod.Password = decrypted
+			s.AuthMethods[i].Password = decrypted
+		}
+
+		config, cleanup, err := getSSHConfigForAuthMethod(s, authMethod)
+		if err != nil {
+			lastErr = fmt.Errorf("auth method %d (%s): %w", i+1, authMethod.Type, err)
+			continue
+		}
+
+		if cleanup != nil {
+			defer cleanup()
+		}
+
+		// 尝试连接
+		err = connectInteractive(s, config)
+		if err == nil {
+			// 连接成功
+			return nil
+		}
+
+		// 记录错误，继续尝试下一个认证方法
+		lastErr = fmt.Errorf("auth method %d (%s): %w", i+1, authMethod.Type, err)
+	}
+
+	if lastErr != nil {
+		return fmt.Errorf("all authentication methods failed: %w", lastErr)
+	}
+	return fmt.Errorf("all authentication methods failed")
 }
 
 // getSSHConfig 根据认证类型获取 SSH 客户端配置
@@ -97,6 +146,86 @@ func getSSHConfig(s *session.Session) (*ssh.ClientConfig, func(), error) {
 		cleanup = func() { agentConn.Close() }
 	default:
 		return nil, nil, fmt.Errorf("unsupported auth type: %s", s.AuthType)
+	}
+
+	return sshConfig, cleanup, nil
+}
+
+// getSSHConfigForAuthMethod 为特定的认证方法创建 SSH 配置
+func getSSHConfigForAuthMethod(s *session.Session, authMethod session.AuthMethod) (*ssh.ClientConfig, func(), error) {
+	// 默认忽略主机密钥验证
+	hostKeyCallback := ssh.InsecureIgnoreHostKey()
+
+	// 如果配置中启用了严格主机密钥验证，则使用 known_hosts
+	cfg, err := config.LoadGlobalConfig()
+	if err == nil && cfg.SSH.StrictHostKey {
+		knownHostsPath, err := config.GetKnownHostsPath()
+		if err == nil && knownHostsPath != "" {
+			if _, statErr := os.Stat(knownHostsPath); statErr == nil {
+				// 文件存在，使用 known_hosts 验证
+				hostKeyCallback, err = knownhosts.New(knownHostsPath)
+				if err != nil {
+					// 如果创建 known_hosts 回调失败，回退到忽略
+					hostKeyCallback = ssh.InsecureIgnoreHostKey()
+				}
+			}
+		}
+	}
+
+	sshConfig := &ssh.ClientConfig{
+		User:            s.User,
+		HostKeyCallback: hostKeyCallback,
+	}
+
+	var cleanup func()
+
+	switch authMethod.Type {
+	case "password":
+		sshConfig.Auth = []ssh.AuthMethod{
+			ssh.Password(authMethod.Password),
+		}
+	case "key", "publickey":
+		keyPath := authMethod.KeyPath
+		if keyPath == "" {
+			return nil, nil, fmt.Errorf("no key path specified")
+		}
+		key, err := os.ReadFile(keyPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to read key file: %w", err)
+		}
+		signer, err := ssh.ParsePrivateKey(key)
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to parse private key: %w", err)
+		}
+		sshConfig.Auth = []ssh.AuthMethod{
+			ssh.PublicKeys(signer),
+		}
+	case "agent":
+		authMethod, agentConn, err := getSSHAgentAuth()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to get SSH agent auth: %w", err)
+		}
+		sshConfig.Auth = []ssh.AuthMethod{authMethod}
+		cleanup = func() { agentConn.Close() }
+	case "keyboard-interactive":
+		// 键盘交互式认证 - 使用标准的键盘交互回调
+		sshConfig.Auth = []ssh.AuthMethod{
+			ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) ([]string, error) {
+				// 对于 SecureCRT 导入的会话，我们假设密码已经提供
+				// 如果有密码，则使用密码回答
+				if authMethod.Password != "" {
+					answers := make([]string, len(questions))
+					for i := range questions {
+						answers[i] = authMethod.Password
+					}
+					return answers, nil
+				}
+				// 如果没有密码，返回空（让连接失败，然后尝试下一个认证方式）
+				return nil, fmt.Errorf("keyboard-interactive requires password but none provided")
+			}),
+		}
+	default:
+		return nil, nil, fmt.Errorf("unsupported auth type: %s", authMethod.Type)
 	}
 
 	return sshConfig, cleanup, nil

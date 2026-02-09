@@ -233,6 +233,24 @@ func LoadSecureCRTSessions(cfg config.SecureCRTConfig) (*SessionNode, error) {
 			Valid:    true,
 		}
 
+		// 处理认证方法列表
+		if authMethods, ok := sessionData["auth_methods"].([]securecrt.AuthMethod); ok {
+			for _, am := range authMethods {
+				authMethod := AuthMethod{
+					Type:     am.Type,
+					Priority: am.Priority,
+					KeyPath:  am.KeyFile,
+				}
+				// 如果是密码认证且有加密密码，保存加密密码用于延迟解密
+				if am.Type == "password" && am.Password != "" {
+					authMethod.EncryptedPassword = am.Password
+					session.MasterPassword = cfg.Password
+				}
+				session.AuthMethods = append(session.AuthMethods, authMethod)
+			}
+		}
+
+		// 向后兼容：处理单一认证方式
 		if pwd, ok := sessionData["password"].(string); ok && pwd != "" {
 			session.Password = pwd
 		}
