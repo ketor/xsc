@@ -25,19 +25,21 @@ type AuthMethod struct {
 
 // Session represents a SecureCRT session
 type Session struct {
-	Name              string
-	Hostname          string
-	Port              int
-	Username          string
-	Password          string // 解密后的密码（延迟解密时为空）
-	EncryptedPassword string // 原始加密密码（用于延迟解密）
-	Protocol          string
-	Emulation         string
-	FilePath          string
-	Folder            string
-	AuthMethods       []AuthMethod // 认证方法列表，按优先级排序
-	UseAgent          bool         // 是否使用 SSH Agent
-	PublicKeyFile     string       // 公钥文件路径
+	Name               string
+	Hostname           string
+	Port               int
+	Username           string
+	Password           string // 解密后的密码（延迟解密时为空）
+	EncryptedPassword  string // 原始加密密码（用于延迟解密）
+	Protocol           string
+	Emulation          string
+	FilePath           string
+	Folder             string
+	AuthMethods        []AuthMethod // 认证方法列表，按优先级排序
+	UseAgent           bool         // 是否使用 SSH Agent
+	PublicKeyFile      string       // 公钥文件路径
+	UseGlobalPublicKey bool         // 是否使用全局公钥设置
+	IdentityFilename   string       // Identity 文件名（S:"Identity Filename V2"）
 }
 
 // Config represents SecureCRT configuration
@@ -160,6 +162,14 @@ func parseSessionFile(filePath, basePath, masterPassword string) (*Session, erro
 				}
 			case "public key file":
 				session.PublicKeyFile = value
+			case "identity filename v2":
+				// SecureCRT 使用 S:"Identity Filename V2" 字段指定私钥文件
+				session.IdentityFilename = value
+			case "use global public key":
+				// SecureCRT 使用 D:"Use Global Public Key"=00000001 表示使用全局公钥
+				if value == "1" || strings.ToLower(value) == "true" {
+					session.UseGlobalPublicKey = true
+				}
 			case "use agent":
 				// SecureCRT 使用 B: 类型表示布尔值，0 或 1
 				if value == "1" || strings.ToLower(value) == "true" {
@@ -435,6 +445,26 @@ func (s *Session) ConvertToXSCSession() map[string]interface{} {
 			if s.AuthMethods[i].Type == "publickey" && s.AuthMethods[i].KeyFile == "" {
 				s.AuthMethods[i].KeyFile = s.PublicKeyFile
 				break
+			}
+		}
+	}
+
+	// 如果指定了 Identity Filename V2，使用它作为公钥文件
+	if s.IdentityFilename != "" {
+		for i := range s.AuthMethods {
+			if s.AuthMethods[i].Type == "publickey" && s.AuthMethods[i].KeyFile == "" {
+				s.AuthMethods[i].KeyFile = s.IdentityFilename
+				break
+			}
+		}
+	}
+
+	// 标记使用全局公钥的认证方法
+	if s.UseGlobalPublicKey {
+		for i := range s.AuthMethods {
+			if s.AuthMethods[i].Type == "publickey" && s.AuthMethods[i].KeyFile == "" {
+				// 标记使用全局公钥，后续会自动查找 ~/.ssh/ 下的默认密钥
+				s.AuthMethods[i].KeyFile = ""
 			}
 		}
 	}

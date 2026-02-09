@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/user/xsc/internal/securecrt"
@@ -186,19 +187,43 @@ func getSSHConfigForAuthMethod(s *session.Session, authMethod session.AuthMethod
 		}
 	case "key", "publickey":
 		keyPath := authMethod.KeyPath
-		if keyPath == "" {
-			return nil, nil, fmt.Errorf("no key path specified")
+		var signers []ssh.Signer
+
+		if keyPath != "" {
+			// 使用指定的密钥文件
+			key, err := os.ReadFile(keyPath)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to read key file: %w", err)
+			}
+			signer, err := ssh.ParsePrivateKey(key)
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to parse private key: %w", err)
+			}
+			signers = append(signers, signer)
+		} else {
+			// 如果没有指定密钥文件，自动查找 ~/.ssh/ 下的默认密钥
+			defaultKeys := findDefaultSSHKeys()
+			if len(defaultKeys) == 0 {
+				return nil, nil, fmt.Errorf("no key path specified and no default SSH keys found in ~/.ssh")
+			}
+			for _, keyFile := range defaultKeys {
+				key, err := os.ReadFile(keyFile)
+				if err != nil {
+					continue // 跳过无法读取的密钥
+				}
+				signer, err := ssh.ParsePrivateKey(key)
+				if err != nil {
+					continue // 跳过无法解析的密钥
+				}
+				signers = append(signers, signer)
+			}
+			if len(signers) == 0 {
+				return nil, nil, fmt.Errorf("found default SSH keys in ~/.ssh but failed to load any of them")
+			}
 		}
-		key, err := os.ReadFile(keyPath)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to read key file: %w", err)
-		}
-		signer, err := ssh.ParsePrivateKey(key)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to parse private key: %w", err)
-		}
+
 		sshConfig.Auth = []ssh.AuthMethod{
-			ssh.PublicKeys(signer),
+			ssh.PublicKeys(signers...),
 		}
 	case "agent":
 		authMethod, agentConn, err := getSSHAgentAuth()
@@ -229,6 +254,37 @@ func getSSHConfigForAuthMethod(s *session.Session, authMethod session.AuthMethod
 	}
 
 	return sshConfig, cleanup, nil
+}
+
+// findDefaultSSHKeys 查找 ~/.ssh/ 目录下的默认 SSH 密钥文件
+// 按照标准 SSH 客户端的顺序返回存在的密钥文件路径
+func findDefaultSSHKeys() []string {
+	// 标准 SSH 客户端默认密钥文件名（按优先级排序）
+	defaultKeyNames := []string{
+		"id_ed25519",
+		"id_ecdsa",
+		"id_ecdsa_sk",
+		"id_ed25519_sk",
+		"id_rsa",
+		"id_dsa",
+	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+
+	sshDir := filepath.Join(homeDir, ".ssh")
+	var foundKeys []string
+
+	for _, keyName := range defaultKeyNames {
+		keyPath := filepath.Join(sshDir, keyName)
+		if _, err := os.Stat(keyPath); err == nil {
+			foundKeys = append(foundKeys, keyPath)
+		}
+	}
+
+	return foundKeys
 }
 
 // AgentKeyInfo 描述 SSH Agent 中的一个密钥
