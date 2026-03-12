@@ -260,6 +260,17 @@ func connectWithMultipleAuth(s *session.Session) error {
 	return fmt.Errorf("all authentication methods failed")
 }
 
+// resolveTerminalType 返回发送给远端的终端类型。
+// 优先读取 ~/.xsc/config.yaml 中的 ssh.terminal_type；
+// 未配置时若本地 $TERM 不在远端兼容列表中，则 fallback 到 xterm-256color。
+func resolveTerminalType() string {
+	cfg, err := config.LoadGlobalConfig()
+	if err == nil {
+		return cfg.SSH.GetTerminalType()
+	}
+	return "xterm-256color"
+}
+
 // getHostKeyCallback 获取主机密钥验证回调
 // 默认跳过验证（便捷优先），仅当配置中显式设 strict_host_key: true 时才启用 known_hosts 验证
 func getHostKeyCallback() ssh.HostKeyCallback {
@@ -578,10 +589,7 @@ func connectInteractive(s *session.Session, config *ssh.ClientConfig) error {
 		ssh.TTY_OP_OSPEED: 14400,
 	}
 
-	termType := os.Getenv("TERM")
-	if termType == "" {
-		termType = "xterm-256color"
-	}
+	termType := resolveTerminalType()
 
 	// 请求伪终端
 	if err := sess.RequestPty(termType, height, width, modes); err != nil {
@@ -733,10 +741,7 @@ func connectWithIO(s *session.Session, stdin io.Reader, stdout, stderr io.Writer
 		ssh.TTY_OP_OSPEED: 14400,
 	}
 
-	termType := os.Getenv("TERM")
-	if termType == "" {
-		termType = "xterm-256color"
-	}
+	termType := resolveTerminalType()
 
 	if err := sess.RequestPty(termType, 24, 80, modes); err != nil {
 		return fmt.Errorf("failed to request pty: %w", err)

@@ -20,6 +20,38 @@ type GlobalConfig struct {
 type SSHConfig struct {
 	KnownHostsFile string `yaml:"known_hosts_file,omitempty"`
 	StrictHostKey  *bool  `yaml:"strict_host_key,omitempty"`
+	// TerminalType 指定发送给远端的终端类型。
+	// 留空时自动选择：若本地 $TERM 是远端通常不支持的类型（如 xterm-ghostty），
+	// 则自动替换为 xterm-256color，避免远端缺少 terminfo 条目导致显示异常。
+	TerminalType string `yaml:"terminal_type,omitempty"`
+}
+
+// remoteCompatibleTerms 是远端服务器普遍支持的终端类型集合
+var remoteCompatibleTerms = map[string]bool{
+	"xterm":           true,
+	"xterm-256color":  true,
+	"xterm-color":     true,
+	"vt100":           true,
+	"vt220":           true,
+	"screen":          true,
+	"screen-256color": true,
+	"tmux":            true,
+	"tmux-256color":   true,
+	"linux":           true,
+	"ansi":            true,
+}
+
+// GetTerminalType 返回连接远端时使用的终端类型。
+// 优先级：配置文件 > 本地 $TERM（若兼容）> xterm-256color
+func (c SSHConfig) GetTerminalType() string {
+	if c.TerminalType != "" {
+		return c.TerminalType
+	}
+	localTerm := os.Getenv("TERM")
+	if localTerm != "" && remoteCompatibleTerms[localTerm] {
+		return localTerm
+	}
+	return "xterm-256color"
 }
 
 // IsStrictHostKey 返回是否启用严格主机密钥验证
