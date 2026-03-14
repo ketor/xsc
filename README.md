@@ -479,7 +479,27 @@ mobaxterm:
 ssh:
   strict_host_key: false            # 主机密钥验证（默认 false，跳过验证）
   known_hosts_file: ""              # 自定义 known_hosts 路径
+  terminal_type: ""                 # 发送给远端的终端类型（留空自动选择）
 ```
+
+### 终端类型（terminal_type）
+
+连接远端时发送的 `TERM` 值。大多数远端服务器没有 `xterm-ghostty`、`foot`、`wezterm` 等新型终端的 terminfo 条目，会导致命令显示异常或输入双重 echo。
+
+| 配置值 | 行为 |
+|--------|------|
+| 留空（默认） | 自动检测：本地 `$TERM` 若在兼容列表内则直接使用，否则 fallback 到 `xterm-256color` |
+| 显式指定 | 直接使用指定值，例如 `xterm-256color` |
+
+兼容列表：`xterm`、`xterm-256color`、`xterm-color`、`vt100`、`vt220`、`screen`、`screen-256color`、`tmux`、`tmux-256color`、`linux`、`ansi`
+
+**示例**（Ghostty / 其他新型终端用户）：
+```yaml
+ssh:
+  terminal_type: "xterm-256color"
+```
+
+> 通常无需手动配置，自动 fallback 逻辑已覆盖常见场景。
 
 ### SSH 主机密钥验证
 
