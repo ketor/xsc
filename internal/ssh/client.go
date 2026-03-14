@@ -275,12 +275,12 @@ func resolveTerminalType() string {
 // 默认跳过验证（便捷优先），仅当配置中显式设 strict_host_key: true 时才启用 known_hosts 验证
 func getHostKeyCallback() ssh.HostKeyCallback {
 	cfg, err := config.LoadGlobalConfig()
-	if err == nil && !cfg.SSH.IsStrictHostKey() {
-		// 显式禁用严格主机密钥验证
+	// 配置加载失败时，按默认行为（忽略验证）处理，避免因配置异常触发 known_hosts 检查
+	if err != nil || !cfg.SSH.IsStrictHostKey() {
 		return ssh.InsecureIgnoreHostKey()
 	}
 
-	// 默认或启用严格验证：尝试使用 known_hosts
+	// 仅当显式配置 strict_host_key: true 时，才使用 known_hosts 验证
 	knownHostsPath, err := config.GetKnownHostsPath()
 	if err != nil || knownHostsPath == "" {
 		// 无法获取 known_hosts 路径，回退到忽略
