@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/ketor/xsc/internal/session"
+	"github.com/ketor/xsc/pkg/config"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -1059,10 +1060,13 @@ func TestDialAgentAuthFail(t *testing.T) {
 func TestGetHostKeyCallbackTOFUUnknownHost(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
+	config.ResetForTesting()
 
-	// 创建配置目录（不设置 strict_host_key: false，使用默认严格模式）
+	// 创建配置目录，显式启用严格模式以测试 TOFU
 	configDir := filepath.Join(tmpDir, ".xsc")
 	os.MkdirAll(configDir, 0700)
+	configYAML := "ssh:\n  strict_host_key: true\n"
+	os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0600)
 
 	// 创建空的 known_hosts 文件
 	knownHostsPath := filepath.Join(configDir, "known_hosts")
@@ -1102,10 +1106,13 @@ func TestGetHostKeyCallbackTOFUUnknownHost(t *testing.T) {
 func TestGetHostKeyCallbackTOFUKeyChanged(t *testing.T) {
 	tmpDir := t.TempDir()
 	t.Setenv("HOME", tmpDir)
+	config.ResetForTesting()
 
-	// 创建配置目录
+	// 创建配置目录，显式启用严格模式以测试 TOFU
 	configDir := filepath.Join(tmpDir, ".xsc")
 	os.MkdirAll(configDir, 0700)
+	configYAML := "ssh:\n  strict_host_key: true\n"
+	os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0600)
 
 	// 创建 ~/.ssh 目录和 known_hosts 文件
 	sshDir := filepath.Join(tmpDir, ".ssh")
@@ -1168,6 +1175,162 @@ func TestGetSSHConfigForAuthMethodKeyboardInteractiveWithPassword(t *testing.T) 
 		t.Errorf("User = %s, want testuser", config.User)
 	}
 	if len(config.Auth) != 1 {
-		t.Errorf("期望 1 个认证方法，实际: %d", len(config.Auth))
+		t.Errorf("期望 1 个认证方法（keyboard-interactive），实际: %d", len(config.Auth))
+	}
+}
+
+// TestDialWithMultipleAuthEncryptedPasswordDecryptFail 测试多认证 Dial 密码解密失败（SecureCRT）
+func TestDialWithMultipleAuthEncryptedPasswordDecryptFail(t *testing.T) {
+	s := &session.Session{
+		Host:           "192.168.1.1",
+		Port:           22,
+		User:           "testuser",
+		Valid:          true,
+		PasswordSource: "securecrt",
+		AuthMethods: []session.AuthMethod{
+			{
+				Type:              "password",
+				Password:          "",
+				EncryptedPassword: "invalid_encrypted",
+			},
+		},
+	}
+
+	client, cleanup, err := Dial(s)
+	if err == nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		if client != nil {
+			client.Close()
+		}
+		t.Fatal("解密失败应返回错误")
+	}
+}
+
+// TestConnectWithMultipleAuthEncryptedPasswordXshell 测试多认证 Connect XShell 密码解密失败
+func TestConnectWithMultipleAuthEncryptedPasswordXshell(t *testing.T) {
+	s := &session.Session{
+		Host:           "192.168.1.1",
+		Port:           22,
+		User:           "testuser",
+		Valid:          true,
+		PasswordSource: "xshell",
+		AuthMethods: []session.AuthMethod{
+			{
+				Type:              "password",
+				Password:          "",
+				EncryptedPassword: "invalid_data",
+			},
+		},
+	}
+
+	err := Connect(s)
+	if err == nil {
+		t.Fatal("解密失败应返回错误")
+	}
+}
+
+// TestDialWithMultipleAuthEncryptedPasswordMobaxterm 测试多认证 Dial MobaXterm 密码解密失败
+func TestDialWithMultipleAuthEncryptedPasswordMobaxterm(t *testing.T) {
+	s := &session.Session{
+		Host:           "192.168.1.1",
+		Port:           22,
+		User:           "testuser",
+		Valid:          true,
+		PasswordSource: "mobaxterm",
+		AuthMethods: []session.AuthMethod{
+			{
+				Type:              "password",
+				Password:          "",
+				EncryptedPassword: "invalid_moba_data",
+			},
+		},
+	}
+
+	client, cleanup, err := Dial(s)
+	if err == nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		if client != nil {
+			client.Close()
+		}
+		t.Fatal("解密失败应返回错误")
+	}
+}
+
+// TestConnectWithMultipleAuthEncryptedPasswordMobaxterm 测试 Connect MobaXterm 密码解密失败
+func TestConnectWithMultipleAuthEncryptedPasswordMobaxterm(t *testing.T) {
+	s := &session.Session{
+		Host:           "192.168.1.1",
+		Port:           22,
+		User:           "testuser",
+		Valid:          true,
+		PasswordSource: "mobaxterm",
+		AuthMethods: []session.AuthMethod{
+			{
+				Type:              "password",
+				Password:          "",
+				EncryptedPassword: "invalid_data",
+			},
+		},
+	}
+
+	err := Connect(s)
+	if err == nil {
+		t.Fatal("解密失败应返回错误")
+	}
+}
+
+// TestConnectWithMultipleAuthEncryptedPasswordDefault 测试默认密码源（SecureCRT）解密路径
+func TestConnectWithMultipleAuthEncryptedPasswordDefault(t *testing.T) {
+	s := &session.Session{
+		Host:           "192.168.1.1",
+		Port:           22,
+		User:           "testuser",
+		Valid:          true,
+		PasswordSource: "",
+		AuthMethods: []session.AuthMethod{
+			{
+				Type:              "password",
+				Password:          "",
+				EncryptedPassword: "invalid_data",
+			},
+		},
+	}
+
+	err := Connect(s)
+	if err == nil {
+		t.Fatal("解密失败应返回错误")
+	}
+}
+
+// TestDialWithMultipleAuthEncryptedPasswordDefault 测试 Dial 默认密码源解密路径
+func TestDialWithMultipleAuthEncryptedPasswordDefault(t *testing.T) {
+	s := &session.Session{
+		Host:           "192.168.1.1",
+		Port:           22,
+		User:           "testuser",
+		Valid:          true,
+		PasswordSource: "",
+		AuthMethods: []session.AuthMethod{
+			{
+				Type:              "password",
+				Password:          "",
+				EncryptedPassword: "invalid_data",
+			},
+		},
+	}
+
+	client, cleanup, err := Dial(s)
+	if err == nil {
+		if cleanup != nil {
+			cleanup()
+		}
+		if client != nil {
+			client.Close()
+		}
+		t.Fatal("解密失败应返回错误")
 	}
 }
