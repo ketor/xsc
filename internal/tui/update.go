@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -25,6 +26,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			err:  msg.err,
 		}
 		return m, nil
+
+	case tea.MouseMsg:
+		return m.handleMouse(msg)
 
 	case tea.KeyMsg:
 		// 如果显示错误信息，按任意键关闭
@@ -667,4 +671,70 @@ func (m Model) handleDeleteConfirmInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.deleteConfirmInput, cmd = m.deleteConfirmInput.Update(msg)
 		return m, cmd
 	}
+}
+
+// handleMouse 处理鼠标事件
+func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	// 模态模式下忽略鼠标
+	if m.showHelp || m.showError || m.searchMode || m.lineNumMode ||
+		m.newSessionMode || m.renameMode || m.deleteConfirmMode {
+		return m, nil
+	}
+
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		m.moveCursor(-3)
+		return m, nil
+
+	case tea.MouseButtonWheelDown:
+		m.moveCursor(3)
+		return m, nil
+
+	case tea.MouseButtonLeft:
+		if msg.Action != tea.MouseActionPress {
+			return m, nil
+		}
+
+		// 仅处理树区域点击
+		treeWidth := m.width * 70 / 100
+		contentHeight := m.height - 2
+		if msg.X >= treeWidth || msg.Y >= contentHeight {
+			return m, nil
+		}
+
+		visibleNodes := m.getVisibleNodes()
+		if len(visibleNodes) == 0 {
+			return m, nil
+		}
+
+		startIdx := computeTreeOffset(m.cursor, len(visibleNodes), contentHeight)
+		clickedIndex := startIdx + msg.Y
+
+		if clickedIndex >= len(visibleNodes) {
+			return m, nil
+		}
+
+		// 双击检测：同一节点索引 + 400ms 内
+		isDoubleClick := clickedIndex == m.lastClickIndex &&
+			time.Since(m.lastClickTime) < 400*time.Millisecond
+
+		m.lastClickTime = time.Now()
+		m.lastClickIndex = clickedIndex
+
+		if isDoubleClick {
+			node := visibleNodes[clickedIndex]
+			if node.IsDir {
+				node.Expanded = !node.Expanded
+			} else if node.Session != nil && node.Session.Valid {
+				return m, m.execSSHCommand(node.Session)
+			}
+			return m, nil
+		}
+
+		// 单击：设置光标
+		m.cursor = clickedIndex
+		return m, nil
+	}
+
+	return m, nil
 }

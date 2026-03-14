@@ -95,6 +95,11 @@ type Model struct {
 	overwriteConflicts  []string
 	pendingPasteDir     Direction
 	pendingPasteDestDir string
+
+	// 鼠标双击检测相关字段
+	lastClickTime  time.Time // 上次点击时间
+	lastClickIndex int       // 上次点击的文件索引
+	lastClickPanel PanelSide // 上次点击的面板
 }
 
 // NewModel 创建 xftp Model
@@ -220,6 +225,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case SessionSelectedMsg:
 		// 用户选择了 session，切换到文件管理模式
 		return m.handleSessionSelected(msg.Session)
+
+	case tea.MouseMsg:
+		// 选择器模式：路由鼠标事件到选择器
+		if m.mode == ModeSelector {
+			var cmd tea.Cmd
+			m.selector, cmd = m.selector.Update(msg)
+			return m, cmd
+		}
+		return m.handleMouse(msg)
 
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -589,6 +603,104 @@ func (m Model) routeToActivePanel(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.remotePanel, cmd = m.remotePanel.Update(msg)
 	}
 	return m, cmd
+}
+
+// handleMouse 处理鼠标事件
+func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	// 非普通模式忽略鼠标
+	if m.mode != ModeNormal {
+		return m, nil
+	}
+
+	// 判断点击的面板：X < width/2 → 左面板，否则右面板
+	panelWidth := m.width / 2
+	var clickedPanel PanelSide
+	var panel *FilePanel
+	if msg.X < panelWidth {
+		clickedPanel = PanelLeft
+		panel = &m.localPanel
+	} else {
+		clickedPanel = PanelRight
+		panel = &m.remotePanel
+	}
+
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		// 自动切换到滚轮所在面板
+		m.activePanel = clickedPanel
+		panel.CursorUp()
+		panel.CursorUp()
+		panel.CursorUp()
+		return m, nil
+
+	case tea.MouseButtonWheelDown:
+		m.activePanel = clickedPanel
+		panel.CursorDown()
+		panel.CursorDown()
+		panel.CursorDown()
+		return m, nil
+
+	case tea.MouseButtonLeft:
+		if msg.Action != tea.MouseActionPress {
+			return m, nil
+		}
+
+		// 切换到点击的面板
+		m.activePanel = clickedPanel
+
+		// 右面板未连接时不处理点击
+		if clickedPanel == PanelRight && !m.connected {
+			return m, nil
+		}
+
+		// 计算面板内 Y 偏移：border(1) + title(1) + header(1) = 3
+		headerOffset := 3
+		fileY := msg.Y - headerOffset
+
+		if fileY < 0 || fileY >= panel.viewHeight() {
+			return m, nil
+		}
+
+		clickedIndex := panel.offset + fileY
+
+		if clickedIndex >= len(panel.entries) {
+			return m, nil
+		}
+
+		// 双击检测：同一面板、同一文件索引、400ms 内
+		isDoubleClick := clickedPanel == m.lastClickPanel &&
+			clickedIndex == m.lastClickIndex &&
+			time.Since(m.lastClickTime) < 400*time.Millisecond
+
+		m.lastClickTime = time.Now()
+		m.lastClickIndex = clickedIndex
+		m.lastClickPanel = clickedPanel
+
+		if isDoubleClick {
+			entry := panel.entries[clickedIndex]
+			if entry.Info.IsDir {
+				panel.cursor = clickedIndex
+				panel.ensureVisible()
+				var newPanel FilePanel
+				var cmd tea.Cmd
+				newPanel, cmd = panel.EnterDir()
+				if clickedPanel == PanelLeft {
+					m.localPanel = newPanel
+				} else {
+					m.remotePanel = newPanel
+				}
+				return m, cmd
+			}
+			return m, nil
+		}
+
+		// 单击：设置光标
+		panel.cursor = clickedIndex
+		panel.ensureVisible()
+		return m, nil
+	}
+
+	return m, nil
 }
 
 // handleConnected 处理连接成功
@@ -989,7 +1101,7 @@ func (m Model) handleSessionSelected(s *session.Session) (tea.Model, tea.Cmd) {
 // Run 启动 xftp TUI 程序
 func Run(s *session.Session) error {
 	m := NewModel(s)
-	p := tea.NewProgram(m, tea.WithAltScreen())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	finalModel, err := p.Run()
 	if err != nil {

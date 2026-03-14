@@ -82,6 +82,22 @@ func (m Model) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, content, statusBar)
 }
 
+// computeTreeOffset 计算树形视图的滚动偏移量
+func computeTreeOffset(cursor, totalNodes, viewHeight int) int {
+	if totalNodes == 0 || viewHeight <= 0 {
+		return 0
+	}
+
+	startIdx := 0
+	if cursor >= viewHeight {
+		startIdx = cursor - viewHeight + 1
+	}
+	if totalNodes > viewHeight && cursor > viewHeight/2 {
+		startIdx = min(cursor-viewHeight/2, totalNodes-viewHeight)
+	}
+	return startIdx
+}
+
 // renderTree 渲染树形视图
 func (m Model) renderTree(width, height int, visibleNodes []*session.SessionNode) string {
 	if m.tree == nil {
@@ -95,15 +111,7 @@ func (m Model) renderTree(width, height int, visibleNodes []*session.SessionNode
 	}
 
 	// 计算滚动的起始位置，确保光标在可视区域内
-	startIdx := 0
-	if m.cursor >= height {
-		startIdx = m.cursor - height + 1
-	}
-	// 如果光标靠近底部，调整起始位置
-	if totalNodes > height && m.cursor > height/2 {
-		startIdx = min(m.cursor-height/2, totalNodes-height)
-	}
-
+	startIdx := computeTreeOffset(m.cursor, totalNodes, height)
 	endIdx := min(startIdx+height, totalNodes)
 
 	// 计算行号宽度（根据总节点数的位数）
