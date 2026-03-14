@@ -23,10 +23,10 @@ type SSHConfig struct {
 }
 
 // IsStrictHostKey 返回是否启用严格主机密钥验证
-// 默认为 true（安全优先），仅当显式设为 false 时才跳过验证
+// 默认为 false（便捷优先），仅当显式设为 true 时才启用验证
 func (c SSHConfig) IsStrictHostKey() bool {
 	if c.StrictHostKey == nil {
-		return true // 默认启用
+		return false // 默认禁用
 	}
 	return *c.StrictHostKey
 }
@@ -92,7 +92,7 @@ func LoadGlobalConfig() (*GlobalConfig, error) {
 		},
 		SSH: SSHConfig{
 			KnownHostsFile: "",
-			StrictHostKey:  nil, // 默认 nil → IsStrictHostKey() 返回 true
+			StrictHostKey:  nil, // 默认 nil → IsStrictHostKey() 返回 false
 		},
 	}
 

@@ -7,11 +7,11 @@ import (
 	"testing"
 )
 
-// TestIsStrictHostKeyDefault 测试默认（nil）时返回 true
+// TestIsStrictHostKeyDefault 测试默认（nil）时返回 false
 func TestIsStrictHostKeyDefault(t *testing.T) {
 	cfg := SSHConfig{}
-	if !cfg.IsStrictHostKey() {
-		t.Error("StrictHostKey 为 nil 时应默认返回 true")
+	if cfg.IsStrictHostKey() {
+		t.Error("StrictHostKey 为 nil 时应默认返回 false")
 	}
 }
 
@@ -56,8 +56,8 @@ func TestLoadGlobalConfig(t *testing.T) {
 	if cfg.SSH.StrictHostKey != nil {
 		t.Error("默认 StrictHostKey 应为 nil")
 	}
-	if !cfg.SSH.IsStrictHostKey() {
-		t.Error("默认 IsStrictHostKey() 应返回 true")
+	if cfg.SSH.IsStrictHostKey() {
+		t.Error("默认 IsStrictHostKey() 应返回 false")
 	}
 
 	globalConfig = nil

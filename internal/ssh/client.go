@@ -261,7 +261,7 @@ func connectWithMultipleAuth(s *session.Session) error {
 }
 
 // getHostKeyCallback 获取主机密钥验证回调
-// 默认启用 known_hosts 验证（安全优先），仅当配置中显式设 strict_host_key: false 时才跳过
+// 默认跳过验证（便捷优先），仅当配置中显式设 strict_host_key: true 时才启用 known_hosts 验证
 func getHostKeyCallback() ssh.HostKeyCallback {
 	cfg, err := config.LoadGlobalConfig()
 	if err == nil && !cfg.SSH.IsStrictHostKey() {
