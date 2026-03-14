@@ -2,6 +2,9 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"time"
+
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -10,7 +13,6 @@ import (
 	"github.com/ketor/xsc/internal/session"
 	"github.com/ketor/xsc/internal/shared"
 	internalssh "github.com/ketor/xsc/internal/ssh"
-	"os"
 )
 
 // 样式定义
@@ -230,6 +232,9 @@ type Model struct {
 	deleteConfirmInput textinput.Model      // 确认输入框
 	deleteTargetNode   *session.SessionNode // 要删除的目标节点
 
+	// 鼠标双击检测相关字段
+	lastClickTime  time.Time // 上次点击时间
+	lastClickIndex int       // 上次点击的节点索引
 }
 
 // 初始化 Model
@@ -293,7 +298,7 @@ func (m Model) Init() tea.Cmd {
 
 // Run 启动 TUI
 func Run() {
-	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
+	p := tea.NewProgram(initialModel(), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)

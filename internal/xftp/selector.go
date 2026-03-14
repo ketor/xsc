@@ -3,6 +3,7 @@ package xftp
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -57,6 +58,10 @@ type Selector struct {
 
 	// 密码显示
 	showPassword bool
+
+	// 鼠标
+	lastClickTime  time.Time // 上次点击时间（双击检测）
+	lastClickIndex int       // 上次点击的节点索引（双击检测）
 
 	// 状态
 	loading       bool
@@ -117,6 +122,9 @@ func (s Selector) Update(msg tea.Msg) (Selector, tea.Cmd) {
 		}
 		return s, nil
 
+	case tea.MouseMsg:
+		return s.handleMouse(msg)
+
 	case tea.KeyMsg:
 		// 错误模式：任意键关闭
 		if s.showError {
@@ -141,6 +149,80 @@ func (s Selector) Update(msg tea.Msg) (Selector, tea.Cmd) {
 		}
 		return s.handleNormalKey(msg)
 	}
+	return s, nil
+}
+
+// handleMouse 处理鼠标事件
+func (s Selector) handleMouse(msg tea.MouseMsg) (Selector, tea.Cmd) {
+	// 模态模式下忽略鼠标
+	if s.showHelp || s.showError || s.searching || s.commanding {
+		return s, nil
+	}
+
+	switch msg.Button {
+	case tea.MouseButtonWheelUp:
+		s.moveCursor(-3)
+		return s, nil
+
+	case tea.MouseButtonWheelDown:
+		s.moveCursor(3)
+		return s, nil
+
+	case tea.MouseButtonLeft:
+		if msg.Action != tea.MouseActionPress {
+			return s, nil
+		}
+
+		// 仅处理树区域点击
+		treeWidth := s.width * 70 / 100
+		if msg.X >= treeWidth {
+			return s, nil
+		}
+
+		// Y 边界检查：排除边框和状态栏区域的点击
+		contentHeight := s.height - 2        // 减去状态栏
+		treeInnerHeight := contentHeight - 2 // 减去上下边框
+		if msg.Y < 1 || msg.Y > treeInnerHeight {
+			return s, nil
+		}
+
+		// 减去边框偏移（selectorTreeStyle 使用 RoundedBorder）
+		clickedIndex := s.offset + (msg.Y - 1)
+
+		// 边界检查
+		if clickedIndex < 0 || clickedIndex >= len(s.flatNodes) {
+			return s, nil
+		}
+
+		// 双击检测
+		now := time.Now()
+		isDoubleClick := clickedIndex == s.lastClickIndex && now.Sub(s.lastClickTime) < 400*time.Millisecond
+
+		// 更新点击记录
+		s.lastClickTime = now
+		s.lastClickIndex = clickedIndex
+
+		if isDoubleClick {
+			node := s.flatNodes[clickedIndex]
+			if node.IsDir {
+				// 双击目录：展开/折叠
+				node.Expanded = !node.Expanded
+				s.updateFlatNodes()
+			} else if node.Session != nil && node.Session.Valid {
+				// 双击会话：选择
+				return s, func() tea.Msg {
+					return SessionSelectedMsg{Session: node.Session}
+				}
+			}
+		} else {
+			// 单击：移动光标
+			s.cursor = clickedIndex
+			s.ensureVisible()
+		}
+
+		return s, nil
+	}
+
 	return s, nil
 }
 
