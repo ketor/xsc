@@ -18,7 +18,7 @@
 - 📱 **原生 SSH**：使用 Go 原生 SSH 客户端，无需依赖外部 `ssh` 或 `sshpass`
 - 🔗 **多源集成**：直接加载 SecureCRT / Xshell / MobaXterm 会话，支持加密密码解密
 - ⌨️ **命令补全**：命令模式下支持 Tab 自动补全
-- 🔒 **TOFU 安全模型**：首次连接自动信任主机密钥，密钥变更时拒绝连接
+- 🔒 **灵活的主机密钥验证**：默认跳过验证（便捷优先），可配置启用 TOFU 安全模型
 
 ### xftp 专有特性
 - 📂 **双面板布局**：左侧本地文件系统，右侧远程 SFTP 文件系统
@@ -289,17 +289,13 @@ publickey → password → keyboard-interactive → agent
 如果使用 publickey 认证且未指定密钥文件，会自动在 `~/.ssh/` 下查找默认密钥：
 `id_ed25519` → `id_ecdsa` → `id_ecdsa_sk` → `id_ed25519_sk` → `id_rsa` → `id_dsa`
 
-### 主机密钥验证（TOFU）
+### 主机密钥验证
 
-xssh/xftp 采用 TOFU（Trust On First Use）安全模型：
+xssh/xftp 默认**跳过主机密钥验证**，可直接连接任何主机，无需处理 `known_hosts` 冲突。
 
-- **首次连接未知主机**：自动信任并将主机密钥写入 `known_hosts`
-- **已知主机密钥匹配**：正常连接
-- **已知主机密钥变更**：拒绝连接（可能是中间人攻击），显示警告信息
-
-可通过配置调整行为：
-- `strict_host_key` 未配置或为 `true`（默认）：启用 TOFU 模式
-- `strict_host_key: false`：跳过所有主机密钥验证（适合内网环境）
+可通过配置启用 TOFU（Trust On First Use）安全模型：
+- `strict_host_key` 未配置或为 `false`（默认）：跳过所有主机密钥验证
+- `strict_host_key: true`：启用 TOFU 模式 — 首次连接自动信任并记录，密钥变更时拒绝连接
 
 ## SecureCRT 集成
 
@@ -481,7 +477,7 @@ mobaxterm:
 
 # SSH 连接配置
 ssh:
-  strict_host_key: true             # 主机密钥验证（默认 true，启用 TOFU）
+  strict_host_key: false            # 主机密钥验证（默认 false，跳过验证）
   known_hosts_file: ""              # 自定义 known_hosts 路径
 ```
 
@@ -489,8 +485,8 @@ ssh:
 
 | 配置值 | 行为 |
 |--------|------|
-| 未配置 / `true` | TOFU 模式：首次连接信任并记录，密钥变更拒绝 |
-| `false` | 跳过验证，适合内网环境 |
+| 未配置 / `false` | 跳过验证（默认），直接连接任何主机 |
+| `true` | TOFU 模式：首次连接信任并记录，密钥变更拒绝 |
 
 `known_hosts` 文件查找顺序：
 1. 配置中指定的 `known_hosts_file`
