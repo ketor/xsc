@@ -7,6 +7,7 @@ import (
 	"github.com/ketor/xsc/internal/session"
 	"github.com/ketor/xsc/internal/xftp"
 	"github.com/ketor/xsc/pkg/config"
+	"github.com/ketor/xsc/pkg/version"
 )
 
 func main() {
@@ -31,6 +32,8 @@ func main() {
 			os.Exit(1)
 		}
 		connectAndRun(os.Args[2])
+	case "version", "--version", "-v":
+		fmt.Println(version.String("xftp"))
 	case "help", "--help", "-h":
 		showHelp()
 	default:
@@ -67,6 +70,7 @@ func showHelp() {
 	fmt.Println("  xftp tui                      启动 TUI 模式")
 	fmt.Println("  xftp <session-path>           连接到指定会话并打开 SFTP")
 	fmt.Println("  xftp connect <session-path>   连接到指定会话并打开 SFTP")
+	fmt.Println("  xftp version                  显示版本信息")
 	fmt.Println("  xftp help                     显示帮助信息")
 	fmt.Println()
 	fmt.Println("Examples:")

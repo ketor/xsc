@@ -5,16 +5,21 @@ BINARY_XFTP=xftp
 BUILD_DIR=./build
 INSTALL_DIR=/usr/local/bin
 
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+LDFLAGS=-ldflags "-X github.com/ketor/xsc/pkg/version.Version=$(VERSION) -X github.com/ketor/xsc/pkg/version.GitCommit=$(GIT_COMMIT) -X github.com/ketor/xsc/pkg/version.BuildDate=$(BUILD_DATE)"
+
 # 构建 xssh 和 xftp
 build:
 	mkdir -p $(BUILD_DIR)
-	go build -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/xssh
-	go build -o $(BUILD_DIR)/$(BINARY_XFTP) ./cmd/xftp
+	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/xssh
+	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_XFTP) ./cmd/xftp
 
 # 构建 xftp
 build-xftp:
 	mkdir -p $(BUILD_DIR)
-	go build -o $(BUILD_DIR)/$(BINARY_XFTP) ./cmd/xftp
+	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_XFTP) ./cmd/xftp
 
 # 构建所有二进制
 build-all: build build-xftp

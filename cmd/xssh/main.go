@@ -14,6 +14,7 @@ import (
 	"github.com/ketor/xsc/internal/tui"
 	"github.com/ketor/xsc/internal/xshell"
 	"github.com/ketor/xsc/pkg/config"
+	"github.com/ketor/xsc/pkg/version"
 )
 
 func main() {
@@ -43,6 +44,8 @@ func main() {
 		convertXShell()
 	case "import-mobaxterm":
 		convertMobaXterm()
+	case "version", "--version", "-v":
+		fmt.Println(version.String("xssh"))
 	case "help", "--help", "-h":
 		showHelp()
 	default:
@@ -316,6 +319,7 @@ func showHelp() {
 	fmt.Println("  xssh import-securecrt        Import SecureCRT sessions to local format")
 	fmt.Println("  xssh import-xshell           Import Xshell sessions to local format")
 	fmt.Println("  xssh import-mobaxterm        Import MobaXterm sessions to local format")
+	fmt.Println("  xssh version                 Show version information")
 	fmt.Println("  xssh help                    Show this help message")
 	fmt.Println()
 	fmt.Println("Examples:")

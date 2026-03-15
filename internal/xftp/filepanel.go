@@ -127,6 +127,13 @@ func (p *FilePanel) setEntries(infos []FileInfo) {
 		return strings.ToLower(infos[i].Name) < strings.ToLower(infos[j].Name)
 	})
 
+	// 如果不是根目录，在列表开头添加 ".." 返回上级目录条目
+	parent := path.Dir(p.cwd)
+	if parent != p.cwd {
+		dotdot := FileInfo{Name: "..", IsDir: true}
+		infos = append([]FileInfo{dotdot}, infos...)
+	}
+
 	p.allEntries = make([]FileEntry, len(infos))
 	for i, info := range infos {
 		p.allEntries[i] = FileEntry{Info: info}
@@ -170,7 +177,8 @@ func (p *FilePanel) applyFilterInternal(query string) {
 	query = strings.ToLower(query)
 	var filtered []FileEntry
 	for _, e := range p.allEntries {
-		if strings.Contains(strings.ToLower(e.Info.Name), query) {
+		// ".." 条目始终保留，不受过滤影响
+		if e.Info.Name == ".." || strings.Contains(strings.ToLower(e.Info.Name), query) {
 			filtered = append(filtered, e)
 		}
 	}
@@ -261,6 +269,10 @@ func (p FilePanel) EnterDir() (FilePanel, tea.Cmd) {
 	entry := p.entries[p.cursor]
 	if !entry.Info.IsDir {
 		return p, nil
+	}
+	// ".." 条目：返回上级目录
+	if entry.Info.Name == ".." {
+		return p.GoParent()
 	}
 	p.cwd = path.Join(p.cwd, entry.Info.Name)
 	p.loading = true
@@ -442,7 +454,7 @@ func (p FilePanel) renderHeader(width int) string {
 		line += fmt.Sprintf(" %-10s", "Perm")
 	}
 	if showTime {
-		line += fmt.Sprintf(" %s", "Modified")
+		line += fmt.Sprintf(" %-6s", "Modify")
 	}
 
 	return headerStyle.Width(width).Render(line)

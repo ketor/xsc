@@ -1188,9 +1188,22 @@ func (m Model) renderStatusBar() string {
 	// 右侧：状态信息 + 帮助提示
 	right := fmt.Sprintf(" %s | ?:Help :q:Quit ", m.statusMsg)
 
-	// 中间填充
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+	// 可用内容宽度（减去 StatusBarStyle 的左右 Padding 各 1 字符）
+	contentWidth := m.width - 2
+	// 如果左右合计超出宽度，截断左侧路径部分
+	gap := contentWidth - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 0 {
+		maxLeft := contentWidth - lipgloss.Width(right)
+		if maxLeft < 0 {
+			maxLeft = 0
+		}
+		if len(left) > maxLeft {
+			if maxLeft > 3 {
+				left = left[:maxLeft-3] + "..."
+			} else {
+				left = left[:maxLeft]
+			}
+		}
 		gap = 0
 	}
 
