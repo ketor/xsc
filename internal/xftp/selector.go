@@ -154,8 +154,20 @@ func (s Selector) Update(msg tea.Msg) (Selector, tea.Cmd) {
 
 // handleMouse 处理鼠标事件
 func (s Selector) handleMouse(msg tea.MouseMsg) (Selector, tea.Cmd) {
-	// 模态模式下忽略鼠标
-	if s.showHelp || s.showError || s.searching || s.commanding {
+	// 帮助/错误模态下，左键点击关闭
+	if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+		if s.showHelp {
+			s.showHelp = false
+			return s, nil
+		}
+		if s.showError {
+			s.showError = false
+			s.errorMessage = ""
+			return s, nil
+		}
+	}
+	// 搜索/命令模式下忽略鼠标
+	if s.searching || s.commanding {
 		return s, nil
 	}
 
@@ -180,13 +192,15 @@ func (s Selector) handleMouse(msg tea.MouseMsg) (Selector, tea.Cmd) {
 		}
 
 		// Y 边界检查：排除边框和状态栏区域的点击
+		// selectorTreeStyle 使用 RoundedBorder，上下各占 1 行
+		// 内容区域 Y 坐标范围：[1, treeInnerHeight]（含两端）
+		// Y=1 → 第一个节点(offset+0)，Y=treeInnerHeight → 最后一个可见节点
 		contentHeight := s.height - 2        // 减去状态栏
 		treeInnerHeight := contentHeight - 2 // 减去上下边框
 		if msg.Y < 1 || msg.Y > treeInnerHeight {
 			return s, nil
 		}
 
-		// 减去边框偏移（selectorTreeStyle 使用 RoundedBorder）
 		clickedIndex := s.offset + (msg.Y - 1)
 
 		// 边界检查

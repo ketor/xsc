@@ -31,6 +31,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleMouse(msg)
 
 	case tea.KeyMsg:
+		// 右键菜单打开时，处理菜单键盘操作
+		if m.contextMenu.visible {
+			return m.handleContextMenuKey(msg)
+		}
+
 		// 如果显示错误信息，按任意键关闭
 		if m.showError {
 			m.showError = false
@@ -675,9 +680,33 @@ func (m Model) handleDeleteConfirmInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // handleMouse 处理鼠标事件
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	// 模态模式下忽略鼠标
-	if m.showHelp || m.showError || m.searchMode || m.lineNumMode ||
-		m.newSessionMode || m.renameMode || m.deleteConfirmMode {
+	// 右键菜单打开时，处理关闭逻辑
+	if m.contextMenu.visible {
+		if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+			m.contextMenu.visible = false
+			return m, nil
+		}
+		if msg.Button == tea.MouseButtonRight && msg.Action == tea.MouseActionPress {
+			m.contextMenu.visible = false
+			// 不 return，继续处理以打开新菜单
+		} else {
+			return m, nil
+		}
+	}
+
+	// 帮助/错误模态下，左键点击关闭
+	if m.showHelp && msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+		m.showHelp = false
+		return m, nil
+	}
+	if m.showError && msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+		m.showError = false
+		m.errorMessage = ""
+		return m, nil
+	}
+
+	// 其他输入模态下忽略鼠标（有 textinput 焦点）
+	if m.searchMode || m.lineNumMode || m.newSessionMode || m.renameMode || m.deleteConfirmMode {
 		return m, nil
 	}
 
@@ -698,7 +727,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// 仅处理树区域点击
 		treeWidth := m.width * 70 / 100
 		contentHeight := m.height - 2
-		if msg.X >= treeWidth || msg.Y >= contentHeight {
+		if msg.X < 0 || msg.X >= treeWidth || msg.Y < 0 || msg.Y >= contentHeight {
 			return m, nil
 		}
 
@@ -722,6 +751,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.lastClickIndex = clickedIndex
 
 		if isDoubleClick {
+			m.cursor = clickedIndex
 			node := visibleNodes[clickedIndex]
 			if node.IsDir {
 				node.Expanded = !node.Expanded
@@ -734,7 +764,110 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		// 单击：设置光标
 		m.cursor = clickedIndex
 		return m, nil
+
+	case tea.MouseButtonRight:
+		if msg.Action != tea.MouseActionPress {
+			return m, nil
+		}
+		m.contextMenu.visible = false
+
+		treeWidth := m.width * 70 / 100
+		contentHeight := m.height - 2
+		if msg.X < 0 || msg.X >= treeWidth || msg.Y < 0 || msg.Y >= contentHeight {
+			return m, nil
+		}
+
+		visibleNodes := m.getVisibleNodes()
+		if len(visibleNodes) == 0 {
+			return m, nil
+		}
+		startIdx := computeTreeOffset(m.cursor, len(visibleNodes), contentHeight)
+		clickedIndex := startIdx + msg.Y
+		if clickedIndex >= len(visibleNodes) {
+			return m, nil
+		}
+
+		node := visibleNodes[clickedIndex]
+		m.cursor = clickedIndex
+
+		if node.IsDir {
+			return m, nil
+		}
+
+		var items []ContextMenuItem
+		if node.Session != nil && node.Session.Valid {
+			items = append(items, ContextMenuItem{Label: "连接", Key: "Enter", Action: "connect"})
+		}
+		if node.Session != nil {
+			if !node.IsReadOnly() {
+				items = append(items, ContextMenuItem{Label: "编辑", Key: "e", Action: "edit"})
+				items = append(items, ContextMenuItem{Label: "重命名", Key: "c", Action: "rename"})
+				items = append(items, ContextMenuItem{Label: "删除", Key: "D", Action: "delete"})
+			}
+		}
+		if len(items) == 0 {
+			return m, nil
+		}
+
+		m.contextMenu = ContextMenu{visible: true, items: items, cursor: 0, node: node}
+		return m, nil
 	}
 
+	return m, nil
+}
+
+// handleContextMenuKey 处理右键菜单的键盘输入
+func (m Model) handleContextMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case msg.Type == tea.KeyEsc:
+		m.contextMenu.visible = false
+		return m, nil
+	case msg.String() == "j" || msg.Type == tea.KeyDown:
+		if m.contextMenu.cursor < len(m.contextMenu.items)-1 {
+			m.contextMenu.cursor++
+		}
+		return m, nil
+	case msg.String() == "k" || msg.Type == tea.KeyUp:
+		if m.contextMenu.cursor > 0 {
+			m.contextMenu.cursor--
+		}
+		return m, nil
+	case msg.Type == tea.KeyEnter:
+		return m.executeContextMenuAction()
+	}
+	m.contextMenu.visible = false
+	return m, nil
+}
+
+// executeContextMenuAction 执行右键菜单选中的操作
+func (m Model) executeContextMenuAction() (tea.Model, tea.Cmd) {
+	if m.contextMenu.cursor < 0 || m.contextMenu.cursor >= len(m.contextMenu.items) {
+		m.contextMenu.visible = false
+		return m, nil
+	}
+	item := m.contextMenu.items[m.contextMenu.cursor]
+	node := m.contextMenu.node
+	m.contextMenu.visible = false
+
+	if node == nil || node.Session == nil {
+		return m, nil
+	}
+
+	switch item.Action {
+	case "connect":
+		if node.Session.Valid {
+			return m, m.execSSHCommand(node.Session)
+		}
+	case "edit":
+		if node.Session.FilePath != "" {
+			return m, m.execEditCommand(node.Session)
+		}
+	case "delete":
+		return m, m.prepareDeleteConfirm(node)
+	case "rename":
+		if node.Session.FilePath != "" {
+			return m, m.prepareRenameSession(node)
+		}
+	}
 	return m, nil
 }

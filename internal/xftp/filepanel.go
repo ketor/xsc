@@ -13,6 +13,11 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// panelHeaderLines 是文件面板中文件列表上方的行数（屏幕坐标偏移）
+// 包含：外部 border 顶边(1) + 标题行(1) + 表头行(1) = 3
+// 用于鼠标点击时将屏幕 Y 坐标转换为文件列表索引
+const panelHeaderLines = 3
+
 // FileEntry 文件列表条目（含选中状态）
 type FileEntry struct {
 	Info     FileInfo

@@ -952,6 +952,7 @@ func TestModelViewModes(t *testing.T) {
 		{"覆盖确认模式", ModeOverwriteConfirm},
 		{"输入模式", ModeInput},
 		{"传输结果模式", ModeTransferResult},
+		{"右键菜单模式", ModeContextMenu},
 	}
 
 	for _, tt := range tests {
@@ -972,6 +973,17 @@ func TestModelViewModes(t *testing.T) {
 			}
 			if tt.mode == ModeOverwriteConfirm {
 				m.overwriteConflicts = []string{"conflict.txt"}
+			}
+			// 为右键菜单模式设置数据
+			if tt.mode == ModeContextMenu {
+				m.contextMenu = ContextMenu{
+					visible: true,
+					items: []ContextMenuItem{
+						{Label: "复制", Key: "y", Action: "yank"},
+						{Label: "删除", Key: "D", Action: "delete"},
+					},
+					cursor: 0,
+				}
 			}
 
 			view := m.View()
@@ -1090,7 +1102,7 @@ func TestModeAllConstants(t *testing.T) {
 	modes := []Mode{
 		ModeNormal, ModeSearch, ModeCommand, ModeHelp,
 		ModeError, ModeConfirm, ModeInput, ModeSelector,
-		ModeTransferResult, ModeOverwriteConfirm,
+		ModeTransferResult, ModeOverwriteConfirm, ModeContextMenu,
 	}
 	for i, m := range modes {
 		if int(m) != i {

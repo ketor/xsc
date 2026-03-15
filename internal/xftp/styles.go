@@ -192,6 +192,18 @@ var (
 
 	ConfirmMsgStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color(colorFg))
+
+	ConfirmYesBtnStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color(colorGreen)).
+				Foreground(lipgloss.Color(colorBg)).
+				Bold(true).
+				Padding(0, 1)
+
+	ConfirmNoBtnStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color(colorRed)).
+				Foreground(lipgloss.Color(colorFg)).
+				Bold(true).
+				Padding(0, 1)
 )
 
 // 文件权限样式
@@ -258,4 +270,20 @@ var (
 
 	mobaxtermFileStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color(colorOrange))
+)
+
+// 右键上下文菜单样式
+var (
+	ContextMenuBarStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color(colorBgAlt)).
+				Padding(0, 1)
+
+	ContextMenuItemStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color(colorBgPanel)).
+				Foreground(lipgloss.Color(colorFg))
+
+	ContextMenuActiveStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color(colorYellow)).
+				Foreground(lipgloss.Color(colorBg)).
+				Bold(true)
 )
