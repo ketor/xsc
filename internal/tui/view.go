@@ -79,6 +79,11 @@ func (m Model) View() string {
 		return lipgloss.JoinVertical(lipgloss.Left, content, statusBar, deleteConfirmBar)
 	}
 
+	if m.contextMenu.visible {
+		menuBar := m.renderContextMenuBar()
+		return lipgloss.JoinVertical(lipgloss.Left, content, statusBar, menuBar)
+	}
+
 	return lipgloss.JoinVertical(lipgloss.Left, content, statusBar)
 }
 
@@ -591,4 +596,43 @@ func (m Model) renderHelp() string {
 	})
 
 	return helpContainerStyle.Render(b.String())
+}
+
+// renderContextMenuBar 渲染右键上下文菜单栏
+func (m Model) renderContextMenuBar() string {
+	var parts []string
+	nodeName := ""
+	if m.contextMenu.node != nil {
+		nodeName = m.contextMenu.node.Name
+	}
+	parts = append(parts, lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#a89984")).
+		Render(fmt.Sprintf(" [%s] ", nodeName)))
+
+	for i, item := range m.contextMenu.items {
+		label := fmt.Sprintf(" %s(%s) ", item.Label, item.Key)
+		if i == m.contextMenu.cursor {
+			parts = append(parts, lipgloss.NewStyle().
+				Background(lipgloss.Color("#fabd2f")).
+				Foreground(lipgloss.Color("#282828")).
+				Bold(true).
+				Render(label))
+		} else {
+			parts = append(parts, lipgloss.NewStyle().
+				Background(lipgloss.Color("#504945")).
+				Foreground(lipgloss.Color("#ebdbb2")).
+				Render(label))
+		}
+		parts = append(parts, " ")
+	}
+
+	parts = append(parts, lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#665c54")).
+		Render(" Esc:关闭 j/k:选择 Enter:执行"))
+
+	bar := lipgloss.JoinHorizontal(lipgloss.Center, parts...)
+	return lipgloss.NewStyle().
+		Background(lipgloss.Color("#3c3836")).
+		Width(m.width).
+		Render(bar)
 }

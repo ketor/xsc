@@ -194,6 +194,21 @@ type newSessionEditorCompleteMsg struct {
 	targetPath string
 }
 
+// ContextMenuItem 右键菜单项
+type ContextMenuItem struct {
+	Label  string
+	Key    string
+	Action string
+}
+
+// ContextMenu 右键上下文菜单状态
+type ContextMenu struct {
+	visible bool
+	items   []ContextMenuItem
+	cursor  int
+	node    *session.SessionNode
+}
+
 // Model 是 TUI 的模型
 type Model struct {
 	keys          KeyMap
@@ -235,6 +250,9 @@ type Model struct {
 	// 鼠标双击检测相关字段
 	lastClickTime  time.Time // 上次点击时间
 	lastClickIndex int       // 上次点击的节点索引
+
+	// 右键上下文菜单
+	contextMenu ContextMenu
 }
 
 // 初始化 Model

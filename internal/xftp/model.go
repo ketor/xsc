@@ -27,7 +27,22 @@ const (
 	ModeSelector                     // 会话选择器模式
 	ModeTransferResult               // 传输结果通知模式
 	ModeOverwriteConfirm             // 覆盖确认模式
+	ModeContextMenu                  // 右键上下文菜单模式
 )
+
+// ContextMenuItem 上下文菜单项
+type ContextMenuItem struct {
+	Label  string
+	Key    string
+	Action string
+}
+
+// ContextMenu 上下文菜单
+type ContextMenu struct {
+	visible bool
+	items   []ContextMenuItem
+	cursor  int
+}
 
 // yankEntry yank 缓冲区条目
 type yankEntry struct {
@@ -100,6 +115,12 @@ type Model struct {
 	lastClickTime  time.Time // 上次点击时间
 	lastClickIndex int       // 上次点击的文件索引
 	lastClickPanel PanelSide // 上次点击的面板
+
+	// Shift+Click 范围选择锚点
+	selectionAnchor int
+
+	// 右键上下文菜单
+	contextMenu ContextMenu
 }
 
 // NewModel 创建 xftp Model
@@ -374,6 +395,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// 右键菜单模式
+	if m.mode == ModeContextMenu {
+		return m.handleContextMenuKey(msg)
+	}
+
 	// 搜索模式：优先处理
 	if m.mode == ModeSearch {
 		return m.handleSearchKey(msg)
@@ -607,6 +633,111 @@ func (m Model) routeToActivePanel(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // handleMouse 处理鼠标事件
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	// 右键菜单模式：处理关闭
+	if m.mode == ModeContextMenu {
+		if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+			m.mode = ModeNormal
+			m.contextMenu.visible = false
+			return m, nil
+		}
+		if msg.Button == tea.MouseButtonRight && msg.Action == tea.MouseActionPress {
+			m.mode = ModeNormal
+			m.contextMenu.visible = false
+			// 不 return，继续处理以打开新菜单
+		} else {
+			return m, nil
+		}
+	}
+
+	// 确认栏按钮点击检测
+	if m.mode == ModeConfirm || m.mode == ModeOverwriteConfirm {
+		if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+			// 确认栏在底部，检查 Y 坐标是否在确认栏区域
+			barY := m.height - 1
+			if msg.Y >= barY-1 && msg.Y <= barY {
+				// 根据确认消息文本宽度计算按钮位置
+				var msgText string
+				if m.mode == ModeConfirm {
+					if len(m.confirmFiles) == 1 {
+						msgText = fmt.Sprintf("确认删除 \"%s\"？", m.confirmFiles[0].Name)
+					} else {
+						msgText = fmt.Sprintf("确认删除 %d 个文件？", len(m.confirmFiles))
+					}
+				} else {
+					msgText = fmt.Sprintf("目标已存在 %d 个同名文件/目录，是否覆盖？", len(m.overwriteConflicts))
+				}
+				// 按钮位置：padding(1) + msg + "  " + [Yes(y)] + "  " + [No(n)]
+				yesBtn := ConfirmYesBtnStyle.Render("Yes(y)")
+				noBtn := ConfirmNoBtnStyle.Render("No(n)")
+				yesStart := 1 + lipgloss.Width(msgText) + 2 // padding + msg + gap
+				yesEnd := yesStart + lipgloss.Width(yesBtn)
+				noStart := yesEnd + 2
+				noEnd := noStart + lipgloss.Width(noBtn)
+
+				if msg.X >= yesStart && msg.X < yesEnd {
+					// 点击 Yes 按钮
+					if m.mode == ModeConfirm {
+						return m.executeDelete()
+					}
+					// overwrite confirm
+					dir := m.pendingPasteDir
+					destDir := m.pendingPasteDestDir
+					m.mode = ModeNormal
+					m.overwriteConflicts = nil
+					m.pendingPasteDestDir = ""
+					return m.executePaste(dir, destDir)
+				}
+				if msg.X >= noStart && msg.X < noEnd {
+					// 点击 No 按钮
+					if m.mode == ModeConfirm {
+						m.mode = ModeNormal
+						m.confirmFiles = nil
+						m.statusMsg = "已取消"
+					} else {
+						m.mode = ModeNormal
+						m.overwriteConflicts = nil
+						m.pendingPasteDestDir = ""
+						m.statusMsg = "已取消"
+					}
+					return m, nil
+				}
+				// 点击按钮之外的区域：不做任何操作（安全）
+				return m, nil
+			}
+		}
+		return m, nil
+	}
+
+	// 可点击关闭的模态（左键点击关闭）
+	if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+		switch m.mode {
+		case ModeHelp:
+			m.mode = ModeNormal
+			return m, nil
+		case ModeError:
+			// 连接失败时返回选择器
+			if m.session != nil && !m.connected {
+				if m.remoteFS != nil {
+					m.remoteFS.Close()
+					m.remoteFS = nil
+				}
+				m.session = nil
+				m.mode = ModeSelector
+				m.err = nil
+				m.statusMsg = "请选择会话"
+				m.selector = NewSelector()
+				return m, m.selector.Init()
+			}
+			m.mode = ModeNormal
+			m.err = nil
+			return m, nil
+		case ModeTransferResult:
+			m.mode = ModeNormal
+			m.transferResult = nil
+			return m, nil
+		}
+	}
+
 	// 非普通模式忽略鼠标
 	if m.mode != ModeNormal {
 		return m, nil
@@ -653,9 +784,8 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// 计算面板内 Y 偏移：border(1) + title(1) + header(1) = 3
-		headerOffset := 3
-		fileY := msg.Y - headerOffset
+		// 计算面板内 Y 偏移（屏幕坐标 → 文件列表索引）
+		fileY := msg.Y - panelHeaderLines
 
 		if fileY < 0 || fileY >= panel.viewHeight() {
 			return m, nil
@@ -694,13 +824,131 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// 单击：设置光标
+		// Shift+Click：范围选择
+		if msg.Shift {
+			start := m.selectionAnchor
+			end := clickedIndex
+			if start > end {
+				start, end = end, start
+			}
+			for i := start; i <= end; i++ {
+				if i >= 0 && i < len(panel.entries) {
+					panel.entries[i].Selected = true
+				}
+			}
+			panel.cursor = clickedIndex
+			panel.ensureVisible()
+			return m, nil
+		}
+
+		// 普通单击：设置光标和选择锚点
+		m.selectionAnchor = clickedIndex
 		panel.cursor = clickedIndex
 		panel.ensureVisible()
+		return m, nil
+
+	case tea.MouseButtonRight:
+		if msg.Action != tea.MouseActionPress {
+			return m, nil
+		}
+		if m.mode != ModeNormal {
+			return m, nil
+		}
+		m.activePanel = clickedPanel
+		if clickedPanel == PanelRight && !m.connected {
+			return m, nil
+		}
+		fileY := msg.Y - panelHeaderLines
+		if fileY < 0 || fileY >= panel.viewHeight() {
+			return m, nil
+		}
+		clickedIndex := panel.offset + fileY
+		if clickedIndex >= len(panel.entries) {
+			return m, nil
+		}
+		panel.cursor = clickedIndex
+		panel.ensureVisible()
+
+		var items []ContextMenuItem
+		items = append(items, ContextMenuItem{Label: "复制", Key: "y", Action: "yank"})
+		if len(m.yankFiles) > 0 {
+			items = append(items, ContextMenuItem{Label: "粘贴", Key: "p", Action: "paste"})
+		}
+		items = append(items, ContextMenuItem{Label: "删除", Key: "D", Action: "delete"})
+		items = append(items, ContextMenuItem{Label: "新建目录", Key: "m", Action: "mkdir"})
+		items = append(items, ContextMenuItem{Label: "重命名", Key: "r", Action: "rename"})
+
+		m.contextMenu = ContextMenu{visible: true, items: items, cursor: 0}
+		m.mode = ModeContextMenu
 		return m, nil
 	}
 
 	return m, nil
+}
+
+// handleContextMenuKey 处理右键菜单模式的键盘输入
+func (m Model) handleContextMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case msg.Type == tea.KeyEsc:
+		m.mode = ModeNormal
+		m.contextMenu.visible = false
+		return m, nil
+	case msg.String() == "j" || msg.Type == tea.KeyDown:
+		if m.contextMenu.cursor < len(m.contextMenu.items)-1 {
+			m.contextMenu.cursor++
+		}
+		return m, nil
+	case msg.String() == "k" || msg.Type == tea.KeyUp:
+		if m.contextMenu.cursor > 0 {
+			m.contextMenu.cursor--
+		}
+		return m, nil
+	case msg.Type == tea.KeyEnter:
+		return m.executeContextMenuAction()
+	}
+	m.mode = ModeNormal
+	m.contextMenu.visible = false
+	return m, nil
+}
+
+// executeContextMenuAction 执行右键菜单选中的操作
+func (m Model) executeContextMenuAction() (tea.Model, tea.Cmd) {
+	if m.contextMenu.cursor < 0 || m.contextMenu.cursor >= len(m.contextMenu.items) {
+		m.mode = ModeNormal
+		m.contextMenu.visible = false
+		return m, nil
+	}
+	action := m.contextMenu.items[m.contextMenu.cursor].Action
+	m.mode = ModeNormal
+	m.contextMenu.visible = false
+	switch action {
+	case "yank":
+		return m.handleYank()
+	case "paste":
+		return m.handlePaste()
+	case "delete":
+		return m.handleDelete()
+	case "mkdir":
+		return m.handleMkdir()
+	case "rename":
+		return m.handleRename()
+	}
+	return m, nil
+}
+
+// renderContextMenuBar 渲染右键上下文菜单栏
+func (m Model) renderContextMenuBar() string {
+	var parts []string
+	for i, item := range m.contextMenu.items {
+		label := fmt.Sprintf("%s(%s)", item.Label, item.Key)
+		if i == m.contextMenu.cursor {
+			parts = append(parts, ContextMenuActiveStyle.Render(label))
+		} else {
+			parts = append(parts, ContextMenuItemStyle.Render(label))
+		}
+	}
+	bar := strings.Join(parts, "  ")
+	return ContextMenuBarStyle.Width(m.width).Render(bar)
 }
 
 // handleConnected 处理连接成功
@@ -831,6 +1079,12 @@ func (m Model) View() string {
 		return lipgloss.JoinVertical(lipgloss.Left, panels, statusBar, inputBar)
 	}
 
+	// 右键上下文菜单
+	if m.mode == ModeContextMenu && m.contextMenu.visible {
+		menuBar := m.renderContextMenuBar()
+		return lipgloss.JoinVertical(lipgloss.Left, panels, statusBar, menuBar)
+	}
+
 	// 传输进度条（如果有活跃传输）
 	transferBar := m.renderTransferBar()
 	if transferBar != "" {
@@ -851,17 +1105,23 @@ func (m Model) renderSearchBar() string {
 func (m Model) renderConfirmBar() string {
 	var msg string
 	if len(m.confirmFiles) == 1 {
-		msg = fmt.Sprintf("确认删除 \"%s\"？(y/n)", m.confirmFiles[0].Name)
+		msg = fmt.Sprintf("确认删除 \"%s\"？", m.confirmFiles[0].Name)
 	} else {
-		msg = fmt.Sprintf("确认删除 %d 个文件？(y/n)", len(m.confirmFiles))
+		msg = fmt.Sprintf("确认删除 %d 个文件？", len(m.confirmFiles))
 	}
-	return ConfirmMsgStyle.Width(m.width).Padding(0, 1).Render(msg)
+	yesBtn := ConfirmYesBtnStyle.Render("Yes(y)")
+	noBtn := ConfirmNoBtnStyle.Render("No(n)")
+	bar := msg + "  " + yesBtn + "  " + noBtn
+	return ConfirmMsgStyle.Width(m.width).Padding(0, 1).Render(bar)
 }
 
 // renderOverwriteConfirmBar 渲染覆盖确认对话框
 func (m Model) renderOverwriteConfirmBar() string {
-	msg := fmt.Sprintf("目标已存在 %d 个同名文件/目录，是否覆盖？(y/n)", len(m.overwriteConflicts))
-	return ConfirmMsgStyle.Width(m.width).Padding(0, 1).Render(msg)
+	msg := fmt.Sprintf("目标已存在 %d 个同名文件/目录，是否覆盖？", len(m.overwriteConflicts))
+	yesBtn := ConfirmYesBtnStyle.Render("Yes(y)")
+	noBtn := ConfirmNoBtnStyle.Render("No(n)")
+	bar := msg + "  " + yesBtn + "  " + noBtn
+	return ConfirmMsgStyle.Width(m.width).Padding(0, 1).Render(bar)
 }
 
 // renderInputBar 渲染输入对话框
