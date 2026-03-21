@@ -1,9 +1,10 @@
 # XSC - SSH Session Manager & SFTP File Manager
 
-基于 Go 和 Bubble Tea 开发的终端 SSH 会话管理工具套件，包含两个独立工具：
+基于 Go 和 Bubble Tea 开发的终端 SSH 会话管理工具套件，包含三个工具：
 
 - **xssh** — TUI SSH 会话管理器，支持 Vim 风格操作
 - **xftp** — TUI SFTP 双面板文件管理器
+- **xsc-mcp** — MCP Server，让 Claude Code 等 AI 助手直接管理远程服务器
 
 支持本地 YAML 会话配置，以及直接加载 SecureCRT、Xshell、MobaXterm 会话（含加密密码解密）。
 
@@ -20,6 +21,7 @@
 - ⌨️ **命令补全**：命令模式下支持 Tab 自动补全
 - 🖱️ **鼠标支持**：单击选中、双击连接/进入目录、滚轮翻页
 - 🔒 **灵活的主机密钥验证**：默认跳过验证（便捷优先），可配置启用 TOFU 安全模型
+- 🤖 **AI 助手集成**：通过 MCP Server 让 Claude Code 直接执行远程命令和文件操作
 
 ### xftp 专有特性
 - 📂 **双面板布局**：左侧本地文件系统，右侧远程 SFTP 文件系统
@@ -37,8 +39,8 @@
 git clone <repo-url>
 cd xsc
 
-# 构建（同时构建 xssh 和 xftp）
-make build          # 输出到 ./build/xssh 和 ./build/xftp
+# 构建（同时构建 xssh、xftp 和 xsc-mcp）
+make build          # 输出到 ./build/xssh、./build/xftp 和 ./build/xsc-mcp
 
 # 安装到系统（需要 root 权限）
 sudo make install   # 安装到 /usr/local/bin/
@@ -69,6 +71,9 @@ xssh tui                       # 启动 TUI 交互界面
 xssh list                      # 列出所有会话
 xssh connect prod/my-server    # 直接连接指定会话
 xssh connect web               # 模糊匹配连接
+xssh exec prod/db/master uptime              # 非交互式执行远程命令
+xssh exec prod/db/master --json "df -h"      # JSON 格式输出
+xssh exec prod/db/master -t 60 "long-task"   # 自定义超时（默认 30 秒）
 xssh import-securecrt          # 将 SecureCRT 会话转换为本地格式
 xssh import-xshell             # 将 Xshell 会话转换为本地格式
 xssh import-mobaxterm           # 将 MobaXterm 会话转换为本地格式
@@ -81,7 +86,84 @@ xftp                           # 显示帮助
 xftp tui                       # 启动 TUI 模式（先选择会话再连接）
 xftp <session-path>            # 直接连接指定会话并打开 SFTP
 xftp connect web-server        # 连接指定会话
+
+# 非交互式 SFTP 命令
+xftp ls prod/web /var/log                          # 列出远程目录
+xftp cat prod/web /etc/nginx/nginx.conf            # 读取远程文件
+xftp get prod/web /var/log/app.log ./app.log       # 下载文件
+xftp put prod/web ./config.yaml /etc/app/config.yaml  # 上传文件
+xftp mkdir prod/web /tmp/deploy                    # 创建远程目录
+xftp rm prod/web /tmp/old-backup                   # 删除远程文件/目录
 ```
+
+## MCP Server（Claude Code 集成）
+
+xsc-mcp 是一个 [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) Server，让 Claude Code 等 AI 助手能够通过 xsc 的会话配置直接访问远程服务器，执行命令和管理文件。
+
+### 安装 MCP Server
+
+```bash
+# 1. 构建 xsc-mcp
+make build
+
+# 2. 安装到系统路径
+sudo make install
+
+# 3. 在 Claude Code 中注册 MCP Server
+claude mcp add --transport stdio xsc -- xsc-mcp
+
+# 或指定完整路径
+claude mcp add --transport stdio xsc -- /usr/local/bin/xsc-mcp
+```
+
+验证安装：在 Claude Code 中输入 `/mcp`，确认 `xsc` 显示为 `connected`。
+
+### 可用工具
+
+注册后 Claude Code 自动发现以下工具：
+
+| 工具 | 功能 | 示例 |
+|------|------|------|
+| `list_sessions` | 列出所有 SSH 会话（含 SecureCRT/XShell/MobaXterm） | 按关键词过滤 |
+| `get_session` | 获取会话详情（不含密码） | 模糊路径匹配 |
+| `ssh_exec` | 远程执行命令 | 查看日志、检查状态、故障诊断 |
+| `sftp_list` | 列出远程目录 | 浏览文件系统 |
+| `sftp_read` | 读取远程文件 | 查看配置文件 |
+| `sftp_write` | 写入远程文件 | 修改配置 |
+| `sftp_upload` | 上传本地文件 | 部署文件 |
+| `sftp_download` | 下载远程文件 | 拉取日志 |
+
+### 使用场景
+
+在 Claude Code 对话中直接操作远程服务器：
+
+```
+用户：检查一下 prod/web 服务器的磁盘使用情况
+Claude Code：[调用 ssh_exec: session_path="prod/web", command="df -h"]
+
+用户：看看 nginx 配置文件
+Claude Code：[调用 sftp_read: session_path="prod/web", remote_path="/etc/nginx/nginx.conf"]
+
+用户：把本地的新配置上传上去
+Claude Code：[调用 sftp_upload: session_path="prod/web", local_path="./nginx.conf", remote_path="/etc/nginx/nginx.conf"]
+```
+
+### 会话来源
+
+MCP Server 能访问与 TUI 完全相同的会话范围：
+- `~/.xsc/sessions/` 下的本地 YAML 会话
+- 在 `~/.xsc/config.yaml` 中启用的 SecureCRT 会话
+- 在 `~/.xsc/config.yaml` 中启用的 XShell 会话
+- 在 `~/.xsc/config.yaml` 中启用的 MobaXterm 会话
+
+无需额外配置认证信息，MCP Server 复用已有的密码、密钥和 SSH Agent 配置。
+
+### 安全说明
+
+- MCP Server 通过 stdio 本地运行，不暴露网络端口
+- `list_sessions` 和 `get_session` 返回结果中不包含密码
+- `ssh_exec` 强制最大超时 300 秒
+- `sftp_read` 默认最大读取 1MB，防止大文件导致内存问题
 
 ## 会话配置
 
@@ -536,6 +618,13 @@ ssh:
 ## 目录结构
 
 ```
+项目构建产物：
+./build/
+├── xssh                           # SSH 终端管理器
+├── xftp                           # SFTP 文件管理器
+└── xsc-mcp                        # MCP Server（Claude Code 集成）
+
+用户数据目录：
 ~/.xsc/
 ├── config.yaml                    # 全局配置文件
 ├── known_hosts                    # 主机密钥（TOFU 模式自动写入）
@@ -557,8 +646,9 @@ ssh:
 ## 开发
 
 ```bash
-make build          # 构建 xssh + xftp 到 ./build/
+make build          # 构建 xssh + xftp + xsc-mcp 到 ./build/
 make build-xftp     # 仅构建 xftp
+make build-mcp      # 仅构建 xsc-mcp
 make run            # 运行 xssh TUI
 make run-xftp       # 运行 xftp TUI
 make test           # 运行所有测试：go test -v ./...
@@ -566,7 +656,7 @@ make fmt            # 格式化代码：go fmt ./...
 make vet            # 静态分析：go vet ./...
 make deps           # 下载并整理依赖
 make clean          # 清理构建产物
-make install        # 安装到 /usr/local/bin（xssh + xftp）
+make install        # 安装到 /usr/local/bin（xssh + xftp + xsc-mcp）
 make uninstall      # 卸载
 ```
 
