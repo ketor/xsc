@@ -1,16 +1,22 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 
 	"github.com/ketor/xsc/internal/mobaxterm"
 	"github.com/ketor/xsc/internal/securecrt"
 	"github.com/ketor/xsc/internal/session"
-	"github.com/ketor/xsc/internal/ssh"
+	internalssh "github.com/ketor/xsc/internal/ssh"
 	"github.com/ketor/xsc/internal/tui"
 	"github.com/ketor/xsc/internal/xshell"
 	"github.com/ketor/xsc/pkg/config"
@@ -38,6 +44,12 @@ func main() {
 			os.Exit(1)
 		}
 		connectSession(os.Args[2])
+	case "exec":
+		if len(os.Args) < 4 {
+			fmt.Fprintln(os.Stderr, "Usage: xssh exec <session_path> [options] <command>")
+			os.Exit(1)
+		}
+		execCommand(os.Args[2], os.Args[3:])
 	case "import-securecrt":
 		convertSecureCRT()
 	case "import-xshell":
@@ -88,10 +100,142 @@ func connectSession(sessionPath string) {
 		os.Exit(1)
 	}
 
-	if err := ssh.Connect(s); err != nil {
+	if err := internalssh.Connect(s); err != nil {
 		fmt.Fprintf(os.Stderr, "Connection failed: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// execCommand 在远程主机上执行命令
+func execCommand(sessionPath string, args []string) {
+	timeout := 30 // 默认超时 30 秒
+	jsonOutput := false
+	var cmdArgs []string
+
+	// 解析选项
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-t", "--timeout":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "错误: -t/--timeout 需要指定超时秒数")
+				os.Exit(1)
+			}
+			i++
+			t, err := strconv.Atoi(args[i])
+			if err != nil || t <= 0 {
+				fmt.Fprintln(os.Stderr, "错误: 超时秒数必须为正整数")
+				os.Exit(1)
+			}
+			if t > 300 {
+				t = 300
+			}
+			timeout = t
+		case "--json":
+			jsonOutput = true
+		default:
+			cmdArgs = append(cmdArgs, args[i])
+		}
+	}
+
+	if len(cmdArgs) == 0 {
+		fmt.Fprintln(os.Stderr, "错误: 未指定要执行的命令")
+		os.Exit(1)
+	}
+	command := strings.Join(cmdArgs, " ")
+
+	// 查找会话
+	sessionsDir, err := config.GetSessionsDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "获取会话目录失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	s, err := session.FindSession(sessionsDir, sessionPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "会话未找到: %s\n", sessionPath)
+		os.Exit(1)
+	}
+
+	// 解密密码
+	if err := s.ResolvePassword(); err != nil {
+		fmt.Fprintf(os.Stderr, "密码解密失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 建立 SSH 连接
+	client, cleanup, err := internalssh.Dial(s)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "SSH 连接失败: %v\n", err)
+		os.Exit(1)
+	}
+	defer client.Close()
+	if cleanup != nil {
+		defer cleanup()
+	}
+
+	// 创建会话
+	sshSession, err := client.NewSession()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "创建 SSH 会话失败: %v\n", err)
+		os.Exit(1)
+	}
+	defer sshSession.Close()
+
+	var stdoutBuf, stderrBuf bytes.Buffer
+	sshSession.Stdout = &stdoutBuf
+	sshSession.Stderr = &stderrBuf
+
+	// 使用 context 实现超时
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	defer cancel()
+
+	// 在 goroutine 中执行命令
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- sshSession.Run(command)
+	}()
+
+	var runErr error
+	select {
+	case <-ctx.Done():
+		sshSession.Signal(ssh.SIGKILL)
+		runErr = fmt.Errorf("命令执行超时（%d秒）", timeout)
+	case runErr = <-errCh:
+	}
+
+	exitCode := 0
+	if runErr != nil {
+		if exitErr, ok := runErr.(*ssh.ExitError); ok {
+			exitCode = exitErr.ExitStatus()
+		} else if ctx.Err() != nil {
+			exitCode = 124 // 超时退出码
+		} else {
+			exitCode = 1
+		}
+	}
+
+	if jsonOutput {
+		result := map[string]interface{}{
+			"stdout":    stdoutBuf.String(),
+			"stderr":    stderrBuf.String(),
+			"exit_code": exitCode,
+		}
+		if runErr != nil && ctx.Err() != nil {
+			result["error"] = runErr.Error()
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		enc.Encode(result)
+	} else {
+		if stdoutBuf.Len() > 0 {
+			fmt.Print(stdoutBuf.String())
+		}
+		if stderrBuf.Len() > 0 {
+			fmt.Fprint(os.Stderr, stderrBuf.String())
+		}
+	}
+
+	os.Exit(exitCode)
 }
 
 // importSession 描述可导入的会话来源
@@ -316,6 +460,9 @@ func showHelp() {
 	fmt.Println("  xssh tui                     Launch TUI mode")
 	fmt.Println("  xssh list                    List all sessions")
 	fmt.Println("  xssh connect <path>          Connect to a session")
+	fmt.Println("  xssh exec <path> <cmd>       Execute a remote command")
+	fmt.Println("  xssh exec <path> -t N <cmd>  Execute with timeout (default 30s, max 300s)")
+	fmt.Println("  xssh exec <path> --json <cmd> JSON formatted output")
 	fmt.Println("  xssh import-securecrt        Import SecureCRT sessions to local format")
 	fmt.Println("  xssh import-xshell           Import Xshell sessions to local format")
 	fmt.Println("  xssh import-mobaxterm        Import MobaXterm sessions to local format")
@@ -326,6 +473,8 @@ func showHelp() {
 	fmt.Println("  xssh tui")
 	fmt.Println("  xssh connect prod/db/master")
 	fmt.Println("  xssh connect web-server")
+	fmt.Println("  xssh exec prod/db/master uptime")
+	fmt.Println("  xssh exec prod/db/master --json df -h")
 	fmt.Println("  xssh import-securecrt")
 	fmt.Println("  xssh import-xshell")
 	fmt.Println("  xssh import-mobaxterm")
