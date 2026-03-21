@@ -16,6 +16,7 @@ import (
 	"github.com/ketor/xsc/internal/mobaxterm"
 	"github.com/ketor/xsc/internal/securecrt"
 	"github.com/ketor/xsc/internal/session"
+	"github.com/ketor/xsc/internal/shared"
 	internalssh "github.com/ketor/xsc/internal/ssh"
 	"github.com/ketor/xsc/internal/tui"
 	"github.com/ketor/xsc/internal/xshell"
@@ -68,37 +69,25 @@ func main() {
 }
 
 func listSessions() {
-	sessionsDir, err := config.GetSessionsDir()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error getting sessions directory: %v\n", err)
+	entries := shared.LoadAllSessionsFlat()
+	if entries == nil {
+		fmt.Fprintf(os.Stderr, "Error loading sessions\n")
 		os.Exit(1)
 	}
 
-	sessions, err := session.LoadAllSessions(sessionsDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading sessions: %v\n", err)
-		os.Exit(1)
-	}
-
-	for _, s := range sessions {
-		relPath, _ := filepath.Rel(sessionsDir, s.FilePath)
-		relPath = strings.TrimSuffix(relPath, ".yaml")
-		fmt.Println(relPath)
+	for _, e := range entries {
+		fmt.Println(e.Path)
 	}
 }
 
 func connectSession(sessionPath string) {
-	sessionsDir, err := config.GetSessionsDir()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error getting sessions directory: %v\n", err)
-		os.Exit(1)
-	}
-
-	s, err := session.FindSession(sessionsDir, sessionPath)
+	s, err := shared.FindSessionAllSources(sessionPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Session not found: %s\n", sessionPath)
 		os.Exit(1)
 	}
+
+	_ = s.ResolvePassword()
 
 	if err := internalssh.Connect(s); err != nil {
 		fmt.Fprintf(os.Stderr, "Connection failed: %v\n", err)
@@ -143,24 +132,14 @@ func execCommand(sessionPath string, args []string) {
 	}
 	command := strings.Join(cmdArgs, " ")
 
-	// 查找会话
-	sessionsDir, err := config.GetSessionsDir()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "获取会话目录失败: %v\n", err)
-		os.Exit(1)
-	}
-
-	s, err := session.FindSession(sessionsDir, sessionPath)
+	// 查找会话（支持本地 YAML + SecureCRT/XShell/MobaXterm）
+	s, err := shared.FindSessionAllSources(sessionPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "会话未找到: %s\n", sessionPath)
 		os.Exit(1)
 	}
 
-	// 解密密码
-	if err := s.ResolvePassword(); err != nil {
-		fmt.Fprintf(os.Stderr, "密码解密失败: %v\n", err)
-		os.Exit(1)
-	}
+	_ = s.ResolvePassword()
 
 	// 建立 SSH 连接
 	client, cleanup, err := internalssh.Dial(s)

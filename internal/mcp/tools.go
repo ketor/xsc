@@ -9,7 +9,6 @@ import (
 
 	"github.com/ketor/xsc/internal/session"
 	"github.com/ketor/xsc/internal/shared"
-	"github.com/ketor/xsc/pkg/config"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -41,121 +40,14 @@ type SessionInfo struct {
 	Desc     string `json:"description,omitempty"`
 }
 
-// collectSessions 从会话树中递归收集所有叶子节点（会话）
-func collectSessions(node *session.SessionNode, prefix string) []SessionInfo {
-	var results []SessionInfo
-	for _, child := range node.Children {
-		childPath := child.Name
-		if prefix != "" {
-			childPath = prefix + "/" + child.Name
-		}
-
-		if child.IsDir {
-			results = append(results, collectSessions(child, childPath)...)
-		} else if child.Session != nil {
-			source := "local"
-			if child.Session.PasswordSource != "" {
-				source = child.Session.PasswordSource
-			}
-			results = append(results, SessionInfo{
-				Path:     childPath,
-				Host:     child.Session.Host,
-				Port:     child.Session.Port,
-				User:     child.Session.User,
-				AuthType: string(child.Session.AuthType),
-				Source:   source,
-				Desc:     child.Session.Description,
-			})
-		}
-	}
-	return results
-}
-
-// findSessionInTree 在会话树中按路径查找会话（支持模糊匹配）
-// 先精确匹配，再模糊匹配（路径包含或名称匹配）
-func findSessionInTree(tree *session.SessionNode, path string) *session.Session {
-	allSessions := collectSessionNodes(tree, "")
-
-	// 精确匹配
-	for _, entry := range allSessions {
-		if entry.path == path {
-			return entry.session
-		}
-	}
-
-	// 模糊匹配：路径包含 或 名称匹配
-	for _, entry := range allSessions {
-		if strings.Contains(entry.path, path) || path == filepath.Base(entry.path) {
-			return entry.session
-		}
-	}
-
-	return nil
-}
-
-type sessionEntry struct {
-	path    string
-	session *session.Session
-}
-
-// collectSessionNodes 递归收集所有会话叶子节点及其路径
-func collectSessionNodes(node *session.SessionNode, prefix string) []sessionEntry {
-	var results []sessionEntry
-	for _, child := range node.Children {
-		childPath := child.Name
-		if prefix != "" {
-			childPath = prefix + "/" + child.Name
-		}
-
-		if child.IsDir {
-			results = append(results, collectSessionNodes(child, childPath)...)
-		} else if child.Session != nil {
-			results = append(results, sessionEntry{
-				path:    childPath,
-				session: child.Session,
-			})
-		}
-	}
-	return results
-}
-
-// findSessionByPath 查找会话并解密密码
-// 先在本地 YAML 会话中查找，再在 SecureCRT/XShell/MobaXterm 中查找
+// findSessionByPath 查找会话并解密密码（支持所有来源）
 func findSessionByPath(sessionPath string) (*session.Session, error) {
-	// 先尝试本地 YAML 会话（快速路径）
-	sessionsDir, err := config.GetSessionsDir()
-	if err == nil {
-		if s, err := session.FindSession(sessionsDir, sessionPath); err == nil {
-			resolveSessionPassword(s)
-			return s, nil
-		}
+	s, err := shared.FindSessionAllSources(sessionPath)
+	if err != nil {
+		return nil, err
 	}
-
-	// 在完整会话树中查找（包括 SecureCRT/XShell/MobaXterm）
-	tree, _ := shared.LoadSessionTree()
-	if tree != nil {
-		if s := findSessionInTree(tree, sessionPath); s != nil {
-			resolveSessionPassword(s)
-			return s, nil
-		}
-	}
-
-	return nil, fmt.Errorf("会话未找到 '%s'", sessionPath)
-}
-
-// resolveSessionPassword 解密会话密码（如需要）
-func resolveSessionPassword(s *session.Session) {
-	if s.Password == "" && s.EncryptedPassword != "" {
-		_ = s.ResolvePassword()
-	}
-	// 处理多认证方法中的加密密码
-	for i, am := range s.AuthMethods {
-		if am.Password == "" && am.EncryptedPassword != "" {
-			// ResolvePassword 会在 ssh.Dial 中处理多认证方法的解密
-			// 这里预设 MasterPassword 确保 Dial 时能解密
-			_ = s.AuthMethods[i].EncryptedPassword // 保留，由 Dial 处理
-		}
-	}
+	_ = s.ResolvePassword()
+	return s, nil
 }
 
 // --- list_sessions ---
@@ -186,16 +78,26 @@ func handleListSessions(_ context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk
 		}
 	}
 
-	// 使用 shared.LoadSessionTree() 加载所有来源的会话
-	tree, _ := shared.LoadSessionTree()
-	if tree == nil {
-		return errorResult("加载会话树失败"), nil
+	entries := shared.LoadAllSessionsFlat()
+	if entries == nil {
+		return errorResult("加载会话失败"), nil
 	}
 
-	allSessions := collectSessions(tree, "")
-
 	var results []SessionInfo
-	for _, info := range allSessions {
+	for _, e := range entries {
+		source := "local"
+		if e.Session.PasswordSource != "" {
+			source = e.Session.PasswordSource
+		}
+		info := SessionInfo{
+			Path:     e.Path,
+			Host:     e.Session.Host,
+			Port:     e.Session.Port,
+			User:     e.Session.User,
+			AuthType: string(e.Session.AuthType),
+			Source:   source,
+			Desc:     e.Session.Description,
+		}
 		if args.Filter == "" || matchesFilter(info, args.Filter) {
 			results = append(results, info)
 		}
@@ -234,26 +136,21 @@ func handleGetSession(_ context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.C
 		return nil, fmt.Errorf("参数解析失败: %w", err)
 	}
 
-	// 在完整会话树中查找
-	tree, _ := shared.LoadSessionTree()
-	if tree == nil {
-		return errorResult("加载会话树失败"), nil
-	}
+	entries := shared.LoadAllSessionsFlat()
 
-	allSessions := collectSessionNodes(tree, "")
-	var found *sessionEntry
+	var found *shared.SessionEntry
 	// 精确匹配
-	for i, entry := range allSessions {
-		if entry.path == args.SessionPath {
-			found = &allSessions[i]
+	for i, e := range entries {
+		if e.Path == args.SessionPath {
+			found = &entries[i]
 			break
 		}
 	}
 	// 模糊匹配
 	if found == nil {
-		for i, entry := range allSessions {
-			if strings.Contains(entry.path, args.SessionPath) || args.SessionPath == filepath.Base(entry.path) {
-				found = &allSessions[i]
+		for i, e := range entries {
+			if strings.Contains(e.Path, args.SessionPath) || args.SessionPath == filepath.Base(e.Path) {
+				found = &entries[i]
 				break
 			}
 		}
@@ -263,14 +160,14 @@ func handleGetSession(_ context.Context, req *mcpsdk.CallToolRequest) (*mcpsdk.C
 		return errorResult(fmt.Sprintf("会话未找到 '%s'", args.SessionPath)), nil
 	}
 
-	s := found.session
+	s := found.Session
 	source := "local"
 	if s.PasswordSource != "" {
 		source = s.PasswordSource
 	}
 
 	info := SessionInfo{
-		Path:     found.path,
+		Path:     found.Path,
 		Host:     s.Host,
 		Port:     s.Port,
 		User:     s.User,

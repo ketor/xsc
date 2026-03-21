@@ -68,7 +68,7 @@ EOF
 ```bash
 xssh                           # 显示帮助
 xssh tui                       # 启动 TUI 交互界面
-xssh list                      # 列出所有会话
+xssh list                      # 列出所有会话（含 SecureCRT/XShell/MobaXterm）
 xssh connect prod/my-server    # 直接连接指定会话
 xssh connect web               # 模糊匹配连接
 xssh exec prod/db/master uptime              # 非交互式执行远程命令
@@ -95,6 +95,31 @@ xftp put prod/web ./config.yaml /etc/app/config.yaml  # 上传文件
 xftp mkdir prod/web /tmp/deploy                    # 创建远程目录
 xftp rm prod/web /tmp/old-backup                   # 删除远程文件/目录
 ```
+
+### 访问 SecureCRT/XShell/MobaXterm 会话
+
+所有 CLI 命令（`connect`、`exec`、`list`、`ls`、`cat`、`get`、`put` 等）均支持直接访问 SecureCRT、XShell 和 MobaXterm 会话，**无需先执行 import 转换**。只要在 `~/.xsc/config.yaml` 中启用了对应来源，会话即可通过命令行和 MCP 直接使用。
+
+```bash
+# 列出所有会话（包括 SecureCRT/XShell/MobaXterm）
+xssh list
+
+# 直接连接 SecureCRT 会话（会话路径格式：securecrt/<文件夹>/<会话名>）
+xssh connect securecrt/Production/web-server-01
+xssh exec securecrt/Production/db-master "show databases"
+
+# 直接连接 XShell 会话
+xftp ls xshell/Servers/nginx-01 /var/log
+
+# 直接连接 MobaXterm 会话
+xssh exec mobaxterm/Prod/app-server "systemctl status nginx"
+
+# 模糊匹配同样适用（匹配路径或名称中的关键词）
+xssh connect web-server-01
+xssh exec db-master "uptime"
+```
+
+> 会话路径取决于原始工具中的文件夹结构。使用 `xssh list` 查看所有可用的会话路径。
 
 ## MCP Server（Claude Code 集成）
 

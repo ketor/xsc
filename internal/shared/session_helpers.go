@@ -1,6 +1,8 @@
 package shared
 
 import (
+	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/ketor/xsc/internal/session"
@@ -107,6 +109,77 @@ func LoadSessionTree() (tree *session.SessionNode, sessionsDir string) {
 	}
 
 	return tree, sessionsDir
+}
+
+// SessionEntry 表示一个扁平化的会话条目（路径 + 会话对象）
+type SessionEntry struct {
+	Path    string           // 会话在树中的路径，如 "securecrt/prod/web-01"
+	Session *session.Session // 会话对象
+}
+
+// FindSessionAllSources 在所有会话来源中查找会话（本地 YAML + SecureCRT/XShell/MobaXterm）
+// 先尝试本地 YAML 快速路径，未找到则在完整会话树中查找（精确匹配 → 模糊匹配）
+func FindSessionAllSources(sessionPath string) (*session.Session, error) {
+	// 快速路径：先在本地 YAML 中查找
+	sessionsDir, err := config.GetSessionsDir()
+	if err == nil {
+		if s, err := session.FindSession(sessionsDir, sessionPath); err == nil {
+			return s, nil
+		}
+	}
+
+	// 在完整会话树中查找（包括 SecureCRT/XShell/MobaXterm）
+	tree, _ := LoadSessionTree()
+	if tree == nil {
+		return nil, fmt.Errorf("会话未找到: %s", sessionPath)
+	}
+
+	entries := collectSessionEntries(tree, "")
+
+	// 精确匹配
+	for _, e := range entries {
+		if e.Path == sessionPath {
+			return e.Session, nil
+		}
+	}
+
+	// 模糊匹配：路径包含 或 名称匹配
+	for _, e := range entries {
+		if strings.Contains(e.Path, sessionPath) || sessionPath == filepath.Base(e.Path) {
+			return e.Session, nil
+		}
+	}
+
+	return nil, fmt.Errorf("会话未找到: %s", sessionPath)
+}
+
+// LoadAllSessionsFlat 加载所有来源的会话并以扁平列表返回（本地 YAML + SecureCRT/XShell/MobaXterm）
+func LoadAllSessionsFlat() []SessionEntry {
+	tree, _ := LoadSessionTree()
+	if tree == nil {
+		return nil
+	}
+	return collectSessionEntries(tree, "")
+}
+
+// collectSessionEntries 递归收集会话树中的所有叶子节点
+func collectSessionEntries(node *session.SessionNode, prefix string) []SessionEntry {
+	var results []SessionEntry
+	for _, child := range node.Children {
+		childPath := child.Name
+		if prefix != "" {
+			childPath = prefix + "/" + child.Name
+		}
+		if child.IsDir {
+			results = append(results, collectSessionEntries(child, childPath)...)
+		} else if child.Session != nil {
+			results = append(results, SessionEntry{
+				Path:    childPath,
+				Session: child.Session,
+			})
+		}
+	}
+	return results
 }
 
 // CountSessions 统计树中的叶子节点（会话）数量

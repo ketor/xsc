@@ -10,10 +10,9 @@ import (
 
 	"github.com/pkg/sftp"
 
-	"github.com/ketor/xsc/internal/session"
+	"github.com/ketor/xsc/internal/shared"
 	internalssh "github.com/ketor/xsc/internal/ssh"
 	"github.com/ketor/xsc/internal/xftp"
-	"github.com/ketor/xsc/pkg/config"
 	"github.com/ketor/xsc/pkg/version"
 )
 
@@ -87,13 +86,7 @@ func main() {
 
 // connectAndRun 查找 session 并启动 SFTP 文件管理器
 func connectAndRun(sessionPath string) {
-	sessionsDir, err := config.GetSessionsDir()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "获取会话目录失败: %v\n", err)
-		os.Exit(1)
-	}
-
-	s, err := session.FindSession(sessionsDir, sessionPath)
+	s, err := shared.FindSessionAllSources(sessionPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "会话未找到: %s\n", sessionPath)
 		os.Exit(1)
@@ -121,19 +114,12 @@ func hasJSONFlag(args []string) (bool, []string) {
 
 // connectSFTP 封装会话查找、密码解密、SSH 连接和 SFTP 客户端创建
 func connectSFTP(sessionPath string) (*sftp.Client, func(), error) {
-	sessionsDir, err := config.GetSessionsDir()
-	if err != nil {
-		return nil, nil, fmt.Errorf("获取会话目录失败: %w", err)
-	}
-
-	s, err := session.FindSession(sessionsDir, sessionPath)
+	s, err := shared.FindSessionAllSources(sessionPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("会话未找到: %s", sessionPath)
 	}
 
-	if err := s.ResolvePassword(); err != nil {
-		return nil, nil, fmt.Errorf("密码解密失败: %w", err)
-	}
+	_ = s.ResolvePassword()
 
 	sshClient, sshCleanup, err := internalssh.Dial(s)
 	if err != nil {
