@@ -501,6 +501,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Rename):
 		return m.handleRename()
 
+	case key.Matches(msg, m.keys.Refresh):
+		return m.handleRefresh()
+
 	default:
 		// 路由到激活面板
 		return m.routeToActivePanel(msg)
@@ -618,6 +621,26 @@ func (m Model) switchPanel() (tea.Model, tea.Cmd) {
 }
 
 // routeToActivePanel 将键盘事件路由到激活面板
+// handleRefresh 刷新当前激活面板（清除搜索过滤，重新加载目录）
+func (m Model) handleRefresh() (tea.Model, tea.Cmd) {
+	// 清除搜索状态
+	m.searchQuery = ""
+	m.searchInput.SetValue("")
+
+	var cmd tea.Cmd
+	if m.activePanel == PanelLeft {
+		m.localPanel, cmd = m.localPanel.Refresh()
+	} else {
+		if !m.connected {
+			m.statusMsg = "远程面板未连接"
+			return m, nil
+		}
+		m.remotePanel, cmd = m.remotePanel.Refresh()
+	}
+	m.statusMsg = "正在刷新..."
+	return m, cmd
+}
+
 func (m Model) routeToActivePanel(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	if m.activePanel == PanelLeft {
@@ -1254,6 +1277,7 @@ func (m Model) renderHelp() string {
 				{"D", "删除"},
 				{"r", "重命名"},
 				{"m", "创建目录"},
+				{"R", "刷新面板"},
 			},
 		},
 		{

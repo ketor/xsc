@@ -27,7 +27,8 @@ type KeyMap struct {
 	CloseAllFolds key.Binding // 折叠所有（C）
 
 	// 文件操作
-	Yank   key.Binding // 标记（yank）
+	Refresh key.Binding // 刷新当前面板
+	Yank    key.Binding // 标记（yank）
 	Paste  key.Binding // 粘贴/传输
 	Delete key.Binding // 删除
 	Rename key.Binding // 重命名
@@ -107,6 +108,10 @@ func DefaultKeyMap() KeyMap {
 		CloseAllFolds: key.NewBinding(
 			key.WithKeys("C"),
 			key.WithHelp("C", "折叠所有"),
+		),
+		Refresh: key.NewBinding(
+			key.WithKeys("R"),
+			key.WithHelp("R", "刷新面板"),
 		),
 		Yank: key.NewBinding(
 			key.WithKeys("y"),

@@ -280,6 +280,13 @@ func (p FilePanel) EnterDir() (FilePanel, tea.Cmd) {
 	return p, p.LoadDir()
 }
 
+// Refresh 刷新当前目录（清除过滤器，重新加载）
+func (p FilePanel) Refresh() (FilePanel, tea.Cmd) {
+	p.filter = ""
+	p.loading = true
+	return p, p.LoadDir()
+}
+
 // GoParent 返回上级目录
 func (p FilePanel) GoParent() (FilePanel, tea.Cmd) {
 	parent := path.Dir(p.cwd)
