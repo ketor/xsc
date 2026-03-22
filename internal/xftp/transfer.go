@@ -289,6 +289,13 @@ func (tm *TransferManager) RecordFileComplete(size int64) {
 	tm.totalBytes += size
 }
 
+// RecordDirComplete 记录目录传输完成的数量
+func (tm *TransferManager) RecordDirComplete(count int) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.totalDirs += count
+}
+
 // RecordFailed 记录一个传输失败
 func (tm *TransferManager) RecordFailed() {
 	tm.mu.Lock()

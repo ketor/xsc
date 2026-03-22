@@ -116,13 +116,18 @@ func (m Model) handlePaste() (tea.Model, tea.Cmd) {
 // executePaste 执行粘贴传输
 func (m Model) executePaste(dir Direction, destDir string) (tea.Model, tea.Cmd) {
 	// 添加传输任务（目录递归展开为文件）
+	dirCount := 0
 	for _, yf := range m.yankFiles {
 		if yf.IsDir {
+			dirCount++
 			m.expandDirTasks(yf, destDir, dir)
 		} else {
 			dest := path.Join(destDir, yf.Name)
 			m.transfer.AddTask(yf.Path, dest, dir, yf.Size)
 		}
+	}
+	if dirCount > 0 {
+		m.transfer.RecordDirComplete(dirCount)
 	}
 
 	// 清空 yank 缓冲区
