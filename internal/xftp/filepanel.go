@@ -275,6 +275,7 @@ func (p FilePanel) EnterDir() (FilePanel, tea.Cmd) {
 		return p.GoParent()
 	}
 	p.cwd = path.Join(p.cwd, entry.Info.Name)
+	p.filter = ""
 	p.loading = true
 	return p, p.LoadDir()
 }
@@ -287,6 +288,7 @@ func (p FilePanel) GoParent() (FilePanel, tea.Cmd) {
 		return p, nil
 	}
 	p.cwd = parent
+	p.filter = ""
 	p.loading = true
 	return p, p.LoadDir()
 }

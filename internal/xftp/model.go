@@ -628,6 +628,15 @@ func (m Model) routeToActivePanel(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.remotePanel, cmd = m.remotePanel.Update(msg)
 	}
+	// 进入目录后自动清除搜索状态（目录切换时 EnterDir/GoParent 会清除 panel.filter）
+	panel := m.localPanel
+	if m.activePanel == PanelRight {
+		panel = m.remotePanel
+	}
+	if m.searchQuery != "" && panel.filter == "" {
+		m.searchQuery = ""
+		m.searchInput.SetValue("")
+	}
 	return m, cmd
 }
 
@@ -818,6 +827,11 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 					m.localPanel = newPanel
 				} else {
 					m.remotePanel = newPanel
+				}
+				// 清除搜索状态
+				if m.searchQuery != "" {
+					m.searchQuery = ""
+					m.searchInput.SetValue("")
 				}
 				return m, cmd
 			}
