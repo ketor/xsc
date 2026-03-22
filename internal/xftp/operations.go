@@ -2,7 +2,9 @@ package xftp
 
 import (
 	"fmt"
+	"os"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -113,15 +115,14 @@ func (m Model) handlePaste() (tea.Model, tea.Cmd) {
 
 // executePaste 执行粘贴传输
 func (m Model) executePaste(dir Direction, destDir string) (tea.Model, tea.Cmd) {
-	// 添加传输任务
+	// 添加传输任务（目录递归展开为文件）
 	for _, yf := range m.yankFiles {
 		if yf.IsDir {
-			// MVP 暂不支持目录传输
-			m.statusMsg = "暂不支持目录传输，已跳过目录"
-			continue
+			m.expandDirTasks(yf, destDir, dir)
+		} else {
+			dest := path.Join(destDir, yf.Name)
+			m.transfer.AddTask(yf.Path, dest, dir, yf.Size)
 		}
-		dest := path.Join(destDir, yf.Name)
-		m.transfer.AddTask(yf.Path, dest, dir, yf.Size)
 	}
 
 	// 清空 yank 缓冲区
@@ -133,6 +134,44 @@ func (m Model) executePaste(dir Direction, destDir string) (tea.Model, tea.Cmd) 
 		m.transfer.StartNext(m.remoteFS.SFTPClient()),
 		m.transfer.ListenProgress(),
 	)
+}
+
+// expandDirTasks 递归展开目录，将其中所有文件添加为传输任务
+func (m *Model) expandDirTasks(yf yankEntry, destDir string, dir Direction) {
+	baseDir := path.Dir(yf.Path) // yf.Path 的父目录，用于计算相对路径
+
+	if dir == Upload {
+		// 本地→远程：用 filepath.Walk 遍历本地目录
+		_ = filepath.Walk(yf.Path, func(p string, info os.FileInfo, err error) error {
+			if err != nil {
+				return nil // 跳过无法访问的文件
+			}
+			if info.IsDir() {
+				return nil // 跳过目录本身，doUpload 会自动创建远程目录
+			}
+			rel, _ := filepath.Rel(baseDir, p)
+			dest := path.Join(destDir, filepath.ToSlash(rel))
+			m.transfer.AddTask(p, dest, dir, info.Size())
+			return nil
+		})
+	} else {
+		// 远程→本地：用 sftp.Client.Walk 遍历远程目录
+		sftpClient := m.remoteFS.SFTPClient()
+		walker := sftpClient.Walk(yf.Path)
+		for walker.Step() {
+			if walker.Err() != nil {
+				continue
+			}
+			info := walker.Stat()
+			if info.IsDir() {
+				continue // 跳过目录本身，doDownload 会自动创建本地目录
+			}
+			remotePath := walker.Path()
+			rel, _ := filepath.Rel(baseDir, remotePath)
+			dest := filepath.Join(destDir, rel)
+			m.transfer.AddTask(remotePath, dest, dir, info.Size())
+		}
+	}
 }
 
 // handleOverwriteConfirmKey 处理覆盖确认按键
