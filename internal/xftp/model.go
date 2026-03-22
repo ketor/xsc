@@ -327,9 +327,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.transfer.ListenProgress()
 
 	case TransferCompleteMsg:
-		// 记录完成的文件统计
+		// 记录完成的文件统计（不检查 Status，因为 TransferCompleteMsg 可能先于
+		// ListenProgress 更新状态到 StatusCompleted 到达）
 		for _, t := range m.transfer.Tasks() {
-			if t.ID == msg.TaskID && t.Status == StatusCompleted {
+			if t.ID == msg.TaskID {
 				m.transfer.RecordFileComplete(t.Size)
 				break
 			}
