@@ -100,9 +100,14 @@ func (s *Session) Validate() error {
 
 // ResolvePassword 延迟解密密码（用于 SecureCRT / XShell 会话）
 // 根据 PasswordSource 选择对应的解密器
+// 环境变量 XSC_MASTER_PASSWORD 优先于配置文件中的主密码
 func (s *Session) ResolvePassword() error {
 	if s.Password != "" || s.EncryptedPassword == "" {
 		return nil
+	}
+	// XSC_MASTER_PASSWORD 环境变量覆盖配置文件主密码
+	if envMaster := os.Getenv("XSC_MASTER_PASSWORD"); envMaster != "" {
+		s.MasterPassword = envMaster
 	}
 	if s.MasterPassword == "" {
 		return fmt.Errorf("master password not set for decryption")
