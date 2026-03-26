@@ -46,7 +46,9 @@ func findSessionByPath(sessionPath string) (*session.Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	_ = s.ResolvePassword()
+	if err := s.ResolvePassword(); err != nil {
+		return nil, fmt.Errorf("密码解密失败: %w", err)
+	}
 	return s, nil
 }
 

@@ -11,8 +11,8 @@ import (
 	"time"
 
 	internalssh "github.com/ketor/xsc/internal/ssh"
-	"github.com/pkg/sftp"
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/pkg/sftp"
 )
 
 // connectSFTP 建立 SFTP 连接

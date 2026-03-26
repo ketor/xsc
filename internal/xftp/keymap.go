@@ -29,11 +29,11 @@ type KeyMap struct {
 	// 文件操作
 	Refresh key.Binding // 刷新当前面板
 	Yank    key.Binding // 标记（yank）
-	Paste  key.Binding // 粘贴/传输
-	Delete key.Binding // 删除
-	Rename key.Binding // 重命名
-	Mkdir  key.Binding // 创建目录
-	Select key.Binding // 多选/取消选择
+	Paste   key.Binding // 粘贴/传输
+	Delete  key.Binding // 删除
+	Rename  key.Binding // 重命名
+	Mkdir   key.Binding // 创建目录
+	Select  key.Binding // 多选/取消选择
 
 	// 全局
 	Help    key.Binding

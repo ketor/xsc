@@ -256,8 +256,8 @@ func TestHandleMouseModalSearchIgnored(t *testing.T) {
 	m.cursor = 0
 
 	modes := []struct {
-		name   string
-		setup  func(*Model)
+		name  string
+		setup func(*Model)
 	}{
 		{"searchMode", func(m *Model) { m.searchMode = true }},
 		{"lineNumMode", func(m *Model) { m.lineNumMode = true }},
