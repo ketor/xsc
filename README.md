@@ -69,15 +69,35 @@ EOF
 ```bash
 xssh                           # 显示帮助
 xssh tui                       # 启动 TUI 交互界面
+
+# 会话管理
 xssh list                      # 列出所有会话（含 SecureCRT/XShell/MobaXterm）
+xssh list --json               # JSON 格式输出
+xssh add prod/web1 --host 192.168.1.100 [--port 22] [--user root]  # 创建会话
+xssh add prod/db --host 10.0.0.1 --auth-type key --key ~/.ssh/id_rsa
+xssh show prod/web1            # 显示会话详情
+xssh show prod/web1 --json     # JSON 格式输出
+xssh edit prod/web1 --host 10.0.0.2 --port 2222  # 修改会话字段
+xssh edit prod/db --user admin --password secret
+xssh delete old-server         # 删除会话
+
+# 连接与执行
 xssh connect prod/my-server    # 直接连接指定会话
 xssh connect web               # 模糊匹配连接
 xssh exec prod/db/master uptime              # 非交互式执行远程命令
 xssh exec prod/db/master --json "df -h"      # JSON 格式输出
 xssh exec prod/db/master -t 60 "long-task"   # 自定义超时（默认 30 秒）
+xssh exec prod/web1,prod/web2,prod/web3 --parallel 5 "uptime"  # 批量并发执行
+
+# 连通性检测
+xssh ping prod/web1                       # 单个会话
+xssh ping prod/web1,prod/web2 --json      # 批量检测，JSON 输出
+xssh ping prod/web1 --timeout 5s          # 自定义超时
+
+# 会话导入
 xssh import-securecrt          # 将 SecureCRT 会话转换为本地格式
 xssh import-xshell             # 将 Xshell 会话转换为本地格式
-xssh import-mobaxterm           # 将 MobaXterm 会话转换为本地格式
+xssh import-mobaxterm          # 将 MobaXterm 会话转换为本地格式
 ```
 
 ### 使用 xftp（SFTP 文件管理器）
@@ -91,8 +111,14 @@ xftp connect web-server        # 连接指定会话
 # 非交互式 SFTP 命令
 xftp ls prod/web /var/log                          # 列出远程目录
 xftp cat prod/web /etc/nginx/nginx.conf            # 读取远程文件
+xftp stat prod/web /etc/hosts                      # 查看文件/目录元数据
+xftp stat prod/web /var/log --json                 # JSON 格式输出
 xftp get prod/web /var/log/app.log ./app.log       # 下载文件
 xftp put prod/web ./config.yaml /etc/app/config.yaml  # 上传文件
+xftp cp prod/web /etc/hosts /etc/hosts.bak         # 远程复制文件
+xftp cp prod/web /var/log/app.log /tmp/app.log.bak --json
+xftp mv prod/web /tmp/old.log /var/log/new.log     # 远程移动文件
+xftp rename prod/web /tmp/file.txt /tmp/newfile.txt  # 重命名文件
 xftp mkdir prod/web /tmp/deploy                    # 创建远程目录
 xftp rm prod/web /tmp/old-backup                   # 删除远程文件/目录
 ```
