@@ -122,8 +122,8 @@ ssh:
 	if cfg.SecureCRT.SessionPath != "/custom/path" {
 		t.Errorf("SessionPath = %s, want /custom/path", cfg.SecureCRT.SessionPath)
 	}
-	if cfg.SecureCRT.Password != "secret123" {
-		t.Errorf("Password = %s, want secret123", cfg.SecureCRT.Password)
+	if cfg.SecureCRT.Password != "" {
+		t.Errorf("Password should not be loaded from YAML (yaml:\"-\"), got %s", cfg.SecureCRT.Password)
 	}
 	if cfg.SSH.IsStrictHostKey() {
 		t.Error("显式设为 false 时 IsStrictHostKey 应返回 false")
@@ -219,6 +219,9 @@ func TestSaveAndLoadGlobalConfig(t *testing.T) {
 		t.Fatalf("Failed to save config: %v", err)
 	}
 
+	// Password 字段标记为 yaml:"-"，保存后不应持久化到文件
+	// 重置缓存强制从文件重新加载
+	globalConfig = nil
 	loadedCfg, err := LoadGlobalConfig()
 	if err != nil {
 		t.Fatalf("Failed to load config: %v", err)
@@ -230,8 +233,8 @@ func TestSaveAndLoadGlobalConfig(t *testing.T) {
 	if loadedCfg.SecureCRT.SessionPath != "/test/path" {
 		t.Errorf("SessionPath = %s, want /test/path", loadedCfg.SecureCRT.SessionPath)
 	}
-	if loadedCfg.SecureCRT.Password != "testpass" {
-		t.Errorf("Password = %s, want testpass", loadedCfg.SecureCRT.Password)
+	if loadedCfg.SecureCRT.Password != "" {
+		t.Errorf("Password should not be persisted to YAML (yaml:\"-\"), got %s", loadedCfg.SecureCRT.Password)
 	}
 	if loadedCfg.SSH.IsStrictHostKey() {
 		t.Error("SSH.StrictHostKey should be false when explicitly set")

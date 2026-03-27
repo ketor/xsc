@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
-	"golang.org/x/term"
 
 	"github.com/ketor/xsc/internal/cli"
 	"github.com/ketor/xsc/internal/mobaxterm"
@@ -24,6 +23,13 @@ import (
 	"github.com/ketor/xsc/pkg/config"
 	"github.com/ketor/xsc/pkg/version"
 )
+
+func init() {
+	// 注册密码解密器
+	session.RegisterDecrypter("securecrt", session.DecrypterFunc(securecrt.DecryptPassword))
+	session.RegisterDecrypter("xshell", session.DecrypterFunc(xshell.DecryptPassword))
+	session.RegisterDecrypter("mobaxterm", session.DecrypterFunc(mobaxterm.DecryptPassword))
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -106,28 +112,8 @@ func main() {
 	}
 }
 
-// resolveSessionPassword 统一处理会话密码解析：
-// 1. ResolvePassword() 延迟解密（支持 XSC_MASTER_PASSWORD 环境变量）
-// 2. XSC_PASSWORD 环境变量注入
-// 3. 非 TTY 环境密码缺失检测
-func resolveSessionPassword(s *session.Session) error {
-	if err := s.ResolvePassword(); err != nil {
-		return fmt.Errorf("密码解密失败: %w", err)
-	}
-	// XSC_PASSWORD 环境变量注入
-	if s.AuthType == session.AuthTypePassword && s.Password == "" {
-		if envPwd := os.Getenv("XSC_PASSWORD"); envPwd != "" {
-			s.Password = envPwd
-		}
-	}
-	// 非 TTY 环境下密码缺失，立即失败而非卡死
-	if s.AuthType == session.AuthTypePassword && s.Password == "" {
-		if !term.IsTerminal(int(os.Stdin.Fd())) {
-			return fmt.Errorf("密码未设置且非 TTY 环境（设置 XSC_PASSWORD 环境变量）")
-		}
-	}
-	return nil
-}
+// resolveSessionPassword 统一处理会话密码解析（委托到 shared 包）
+var resolveSessionPassword = shared.ResolveSessionPassword
 
 func connectSession(sessionPath string) {
 	s, err := shared.FindSessionAllSources(sessionPath)
@@ -399,53 +385,68 @@ func parseImportArgs() bool {
 	return false
 }
 
-// parseAddArgs 解析 add 命令参数
-func parseAddArgs(args []string) AddParams {
-	params := AddParams{}
+// sessionFlags 解析 --host/--port/--user/--auth-type/--password/--key/--json 等通用 flag
+type sessionFlags struct {
+	Path, Host, User, AuthType, Password, KeyPath string
+	Port                                          int
+	JSON                                          bool
+}
+
+func parseSessionFlags(args []string) sessionFlags {
+	var f sessionFlags
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--host":
 			if i+1 < len(args) {
 				i++
-				params.Host = args[i]
+				f.Host = args[i]
 			}
 		case "--port":
 			if i+1 < len(args) {
 				i++
 				if p, err := strconv.Atoi(args[i]); err == nil {
-					params.Port = p
+					f.Port = p
 				}
 			}
 		case "--user":
 			if i+1 < len(args) {
 				i++
-				params.User = args[i]
+				f.User = args[i]
 			}
 		case "--auth-type":
 			if i+1 < len(args) {
 				i++
-				params.AuthType = args[i]
+				f.AuthType = args[i]
 			}
 		case "--password":
 			if i+1 < len(args) {
 				i++
-				params.Password = args[i]
+				f.Password = args[i]
 			}
 		case "--key":
 			if i+1 < len(args) {
 				i++
-				params.KeyPath = args[i]
+				f.KeyPath = args[i]
 			}
 		case "--json":
-			params.JSON = true
+			f.JSON = true
 		default:
 			// 第一个非 flag 参数是路径
-			if !strings.HasPrefix(args[i], "-") && params.Path == "" {
-				params.Path = args[i]
+			if !strings.HasPrefix(args[i], "-") && f.Path == "" {
+				f.Path = args[i]
 			}
 		}
 	}
-	return params
+	return f
+}
+
+// parseAddArgs 解析 add 命令参数
+func parseAddArgs(args []string) AddParams {
+	f := parseSessionFlags(args)
+	return AddParams{
+		Path: f.Path, Host: f.Host, Port: f.Port, User: f.User,
+		AuthType: f.AuthType, Password: f.Password, KeyPath: f.KeyPath, JSON: f.JSON,
+	}
 }
 
 // parseShowArgs 解析 show 命令参数
@@ -463,51 +464,11 @@ func parseShowArgs(args []string) ShowParams {
 
 // parseEditArgs 解析 edit 命令参数
 func parseEditArgs(args []string) EditParams {
-	params := EditParams{}
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--host":
-			if i+1 < len(args) {
-				i++
-				params.Host = args[i]
-			}
-		case "--port":
-			if i+1 < len(args) {
-				i++
-				if p, err := strconv.Atoi(args[i]); err == nil {
-					params.Port = p
-				}
-			}
-		case "--user":
-			if i+1 < len(args) {
-				i++
-				params.User = args[i]
-			}
-		case "--auth-type":
-			if i+1 < len(args) {
-				i++
-				params.AuthType = args[i]
-			}
-		case "--password":
-			if i+1 < len(args) {
-				i++
-				params.Password = args[i]
-			}
-		case "--key":
-			if i+1 < len(args) {
-				i++
-				params.KeyPath = args[i]
-			}
-		case "--json":
-			params.JSON = true
-		default:
-			// 第一个非 flag 参数是路径
-			if !strings.HasPrefix(args[i], "-") && params.Path == "" {
-				params.Path = args[i]
-			}
-		}
+	f := parseSessionFlags(args)
+	return EditParams{
+		Path: f.Path, Host: f.Host, Port: f.Port, User: f.User,
+		AuthType: f.AuthType, Password: f.Password, KeyPath: f.KeyPath, JSON: f.JSON,
 	}
-	return params
 }
 
 // parseDeleteArgs 解析 delete 命令参数
@@ -525,142 +486,123 @@ func parseDeleteArgs(args []string) DeleteParams {
 	return params
 }
 
-func convertSecureCRT() {
+// doImport 统一的导入入口：加载配置 → 构建 importSource → convertSessions
+func doImport(name, dirPrefix string, buildSource func(gc *config.GlobalConfig, skipDecrypt bool) importSource) {
 	skipDecrypt := parseImportArgs()
 	globalConfig, err := config.LoadGlobalConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading global config: %v\n", err)
 		os.Exit(cli.ExitConfig)
 	}
+	convertSessions(buildSource(globalConfig, skipDecrypt))
+}
 
-	convertSessions(importSource{
-		name:              "SecureCRT",
-		dirPrefix:         "securecrt-converted",
-		enabled:           globalConfig.SecureCRT.Enabled,
-		skipDecryptErrors: skipDecrypt,
-		loadAndConvert: func() ([]importSession, error) {
-			scConfig := securecrt.Config{
-				SessionPath: globalConfig.SecureCRT.SessionPath,
-				Password:    globalConfig.SecureCRT.Password,
-			}
-			scSessions, err := securecrt.LoadSessions(scConfig)
-			if err != nil {
-				return nil, err
-			}
-			var result []importSession
-			for _, s := range scSessions {
-				var decryptErr error
-				if s.EncryptedPassword != "" && globalConfig.SecureCRT.Password != "" {
-					pwd, err := securecrt.DecryptPassword(s.EncryptedPassword, globalConfig.SecureCRT.Password)
-					if err != nil {
-						decryptErr = err
-					} else {
-						s.Password = pwd
-					}
+func convertSecureCRT() {
+	doImport("SecureCRT", "securecrt-converted", func(gc *config.GlobalConfig, skipDecrypt bool) importSource {
+		return importSource{
+			name:              "SecureCRT",
+			dirPrefix:         "securecrt-converted",
+			enabled:           gc.SecureCRT.Enabled,
+			skipDecryptErrors: skipDecrypt,
+			loadAndConvert: func() ([]importSession, error) {
+				scConfig := securecrt.Config{
+					SessionPath: gc.SecureCRT.SessionPath,
+					Password:    gc.SecureCRT.Password,
 				}
-				result = append(result, importSession{
-					Name:        s.Name,
-					Folder:      s.Folder,
-					Password:    s.Password,
-					SessionData: s.ConvertToXSSHSession(),
-					DecryptErr:  decryptErr,
-				})
-			}
-			return result, nil
-		},
+				scSessions, err := securecrt.LoadSessions(scConfig)
+				if err != nil {
+					return nil, err
+				}
+				raw := make([]rawImportSession, len(scSessions))
+				for i, s := range scSessions {
+					raw[i] = rawImportSession{Name: s.Name, Folder: s.Folder, Password: s.Password, EncryptedPassword: s.EncryptedPassword, SessionData: s.ConvertToXSSHSession()}
+				}
+				return buildImportSessions(raw, gc.SecureCRT.Password, func(enc, master string) (string, error) { return securecrt.DecryptPassword(enc, master) }), nil
+			},
+		}
 	})
 }
 
 func convertXShell() {
-	skipDecrypt := parseImportArgs()
-	globalConfig, err := config.LoadGlobalConfig()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading global config: %v\n", err)
-		os.Exit(cli.ExitConfig)
-	}
-
-	convertSessions(importSource{
-		name:              "Xshell",
-		dirPrefix:         "xshell-converted",
-		enabled:           globalConfig.XShell.Enabled,
-		skipDecryptErrors: skipDecrypt,
-		loadAndConvert: func() ([]importSession, error) {
-			xsConfig := xshell.Config{
-				SessionPath: globalConfig.XShell.SessionPath,
-				Password:    globalConfig.XShell.Password,
-			}
-			xsSessions, err := xshell.LoadSessions(xsConfig)
-			if err != nil {
-				return nil, err
-			}
-			var result []importSession
-			for _, s := range xsSessions {
-				var decryptErr error
-				if s.EncryptedPassword != "" && globalConfig.XShell.Password != "" {
-					pwd, err := xshell.DecryptPassword(s.EncryptedPassword, globalConfig.XShell.Password)
-					if err != nil {
-						decryptErr = err
-					} else {
-						s.Password = pwd
-					}
+	doImport("Xshell", "xshell-converted", func(gc *config.GlobalConfig, skipDecrypt bool) importSource {
+		return importSource{
+			name:              "Xshell",
+			dirPrefix:         "xshell-converted",
+			enabled:           gc.XShell.Enabled,
+			skipDecryptErrors: skipDecrypt,
+			loadAndConvert: func() ([]importSession, error) {
+				xsConfig := xshell.Config{
+					SessionPath: gc.XShell.SessionPath,
+					Password:    gc.XShell.Password,
 				}
-				result = append(result, importSession{
-					Name:        s.Name,
-					Folder:      s.Folder,
-					Password:    s.Password,
-					SessionData: s.ConvertToXSSHSession(),
-					DecryptErr:  decryptErr,
-				})
-			}
-			return result, nil
-		},
+				xsSessions, err := xshell.LoadSessions(xsConfig)
+				if err != nil {
+					return nil, err
+				}
+				raw := make([]rawImportSession, len(xsSessions))
+				for i, s := range xsSessions {
+					raw[i] = rawImportSession{Name: s.Name, Folder: s.Folder, Password: s.Password, EncryptedPassword: s.EncryptedPassword, SessionData: s.ConvertToXSSHSession()}
+				}
+				return buildImportSessions(raw, gc.XShell.Password, func(enc, master string) (string, error) { return xshell.DecryptPassword(enc, master) }), nil
+			},
+		}
 	})
 }
 
 func convertMobaXterm() {
-	skipDecrypt := parseImportArgs()
-	globalConfig, err := config.LoadGlobalConfig()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading global config: %v\n", err)
-		os.Exit(cli.ExitConfig)
-	}
-
-	convertSessions(importSource{
-		name:              "MobaXterm",
-		dirPrefix:         "mobaxterm-converted",
-		enabled:           globalConfig.MobaXterm.Enabled,
-		skipDecryptErrors: skipDecrypt,
-		loadAndConvert: func() ([]importSession, error) {
-			mxConfig := mobaxterm.Config{
-				SessionPath: globalConfig.MobaXterm.SessionPath,
-				Password:    globalConfig.MobaXterm.Password,
-			}
-			mxSessions, err := mobaxterm.LoadSessions(mxConfig)
-			if err != nil {
-				return nil, err
-			}
-			var result []importSession
-			for _, s := range mxSessions {
-				var decryptErr error
-				if s.EncryptedPassword != "" && globalConfig.MobaXterm.Password != "" {
-					pwd, err := mobaxterm.DecryptPassword(s.EncryptedPassword, globalConfig.MobaXterm.Password)
-					if err != nil {
-						decryptErr = err
-					} else {
-						s.Password = pwd
-					}
+	doImport("MobaXterm", "mobaxterm-converted", func(gc *config.GlobalConfig, skipDecrypt bool) importSource {
+		return importSource{
+			name:              "MobaXterm",
+			dirPrefix:         "mobaxterm-converted",
+			enabled:           gc.MobaXterm.Enabled,
+			skipDecryptErrors: skipDecrypt,
+			loadAndConvert: func() ([]importSession, error) {
+				mxConfig := mobaxterm.Config{
+					SessionPath: gc.MobaXterm.SessionPath,
+					Password:    gc.MobaXterm.Password,
 				}
-				result = append(result, importSession{
-					Name:        s.Name,
-					Folder:      s.Folder,
-					Password:    s.Password,
-					SessionData: s.ConvertToXSSHSession(),
-					DecryptErr:  decryptErr,
-				})
-			}
-			return result, nil
-		},
+				mxSessions, err := mobaxterm.LoadSessions(mxConfig)
+				if err != nil {
+					return nil, err
+				}
+				raw := make([]rawImportSession, len(mxSessions))
+				for i, s := range mxSessions {
+					raw[i] = rawImportSession{Name: s.Name, Folder: s.Folder, Password: s.Password, EncryptedPassword: s.EncryptedPassword, SessionData: s.ConvertToXSSHSession()}
+				}
+				return buildImportSessions(raw, gc.MobaXterm.Password, func(enc, master string) (string, error) { return mobaxterm.DecryptPassword(enc, master) }), nil
+			},
+		}
 	})
+}
+
+// rawImportSession 是三种导入源的公共中间表示
+type rawImportSession struct {
+	Name, Folder, Password, EncryptedPassword string
+	SessionData                               map[string]interface{}
+}
+
+// buildImportSessions 将原始导入会话列表转换为 importSession 列表，统一处理解密逻辑
+func buildImportSessions(sessions []rawImportSession, masterPassword string, decryptFn func(string, string) (string, error)) []importSession {
+	var result []importSession
+	for _, s := range sessions {
+		var decryptErr error
+		if s.EncryptedPassword != "" && masterPassword != "" {
+			pwd, err := decryptFn(s.EncryptedPassword, masterPassword)
+			if err != nil {
+				decryptErr = err
+			} else {
+				s.Password = pwd
+			}
+		}
+		result = append(result, importSession{
+			Name:        s.Name,
+			Folder:      s.Folder,
+			Password:    s.Password,
+			SessionData: s.SessionData,
+			DecryptErr:  decryptErr,
+		})
+	}
+	return result
 }
 
 func showHelp() {

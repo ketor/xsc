@@ -14,7 +14,7 @@ func TestValidateFileName(t *testing.T) {
 		{"正常文件名", "myfile.txt", false},
 		{"正常目录名", "mydir", false},
 		{"包含斜杠", "path/file", true},
-		{"包含双点", "..hidden", true},
+		{"包含双点前缀", "..hidden", false},
 		{"纯双点", "..", true},
 		{"路径穿越", "../etc/passwd", true},
 		{"绝对路径", "/etc/passwd", true},
@@ -22,7 +22,7 @@ func TestValidateFileName(t *testing.T) {
 		{"带空格文件名", "my file.txt", false},
 		{"隐藏文件", ".gitignore", false},
 		{"带点的文件名", "file.tar.gz", false},
-		{"中间含双点", "a..b", true},
+		{"中间含双点", "a..b", false},
 	}
 
 	for _, tt := range tests {
@@ -46,7 +46,7 @@ func TestValidateFileNameEdgeCases(t *testing.T) {
 		{"-", false},            // 连字符
 		{"file-name_v2", false}, // 常见命名
 		{"a/b/c", true},         // 多级路径
-		{"...", true},           // 三个点
+		{"...", false},           // 三个点（合法文件名）
 	}
 
 	for _, tt := range tests {

@@ -12,10 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/ketor/xsc/internal/mobaxterm"
-	"github.com/ketor/xsc/internal/securecrt"
 	"github.com/ketor/xsc/internal/session"
-	"github.com/ketor/xsc/internal/xshell"
 	"github.com/ketor/xsc/pkg/config"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -74,39 +71,8 @@ func Dial(s *session.Session) (*ssh.Client, func(), error) {
 		return nil, nil, err
 	}
 
-	addr := fmt.Sprintf("%s:%d", s.Host, s.Port)
-	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
-	if err != nil {
-		if cleanup != nil {
-			cleanup()
-		}
-		return nil, nil, fmt.Errorf("connection timeout: %w", err)
-	}
-
-	c, chans, reqs, err := ssh.NewClientConn(conn, addr, config)
-	if err != nil {
-		conn.Close()
-		if cleanup != nil {
-			cleanup()
-		}
-		return nil, nil, fmt.Errorf("failed to create SSH connection: %w", err)
-	}
-
-	client := ssh.NewClient(c, chans, reqs)
-
-	// 启动 keepalive goroutine，使用 context 控制生命周期
-	keepaliveCtx, keepaliveCancel := context.WithCancel(context.Background())
-	go startKeepalive(keepaliveCtx, client)
-
-	// 将 keepalive 取消和原有 cleanup 合并
-	combinedCleanup := func() {
-		keepaliveCancel()
-		if cleanup != nil {
-			cleanup()
-		}
-	}
-
-	return client, combinedCleanup, nil
+	addr := net.JoinHostPort(s.Host, fmt.Sprintf("%d", s.Port))
+	return dialSSHClientWithKeepalive(addr, config, cleanup)
 }
 
 // startKeepalive 启动 keepalive 心跳，监听 context 取消
@@ -127,6 +93,49 @@ func startKeepalive(ctx context.Context, client *ssh.Client) {
 	}
 }
 
+// decryptAuthMethodPassword 根据密码来源解密认证方法中的加密密码
+func decryptAuthMethodPassword(encryptedPwd, masterPwd, source string) (string, error) {
+	d, ok := session.GetDecrypter(source)
+	if !ok {
+		return "", fmt.Errorf("unknown password source: %q (no decrypter registered)", source)
+	}
+	return d.Decrypt(encryptedPwd, masterPwd)
+}
+
+// dialSSHClientWithKeepalive 建立 TCP 连接 + SSH 握手 + 启动 keepalive，返回 client 和 cleanup
+func dialSSHClientWithKeepalive(addr string, sshConfig *ssh.ClientConfig, authCleanup func()) (*ssh.Client, func(), error) {
+	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+	if err != nil {
+		if authCleanup != nil {
+			authCleanup()
+		}
+		return nil, nil, fmt.Errorf("connection timeout: %w", err)
+	}
+
+	c, chans, reqs, err := ssh.NewClientConn(conn, addr, sshConfig)
+	if err != nil {
+		conn.Close()
+		if authCleanup != nil {
+			authCleanup()
+		}
+		return nil, nil, fmt.Errorf("failed to create SSH connection: %w", err)
+	}
+
+	client := ssh.NewClient(c, chans, reqs)
+
+	keepaliveCtx, keepaliveCancel := context.WithCancel(context.Background())
+	go startKeepalive(keepaliveCtx, client)
+
+	combinedCleanup := func() {
+		keepaliveCancel()
+		if authCleanup != nil {
+			authCleanup()
+		}
+	}
+
+	return client, combinedCleanup, nil
+}
+
 // dialWithMultipleAuth 按顺序尝试多种认证方式建立连接（不创建交互式会话）
 func dialWithMultipleAuth(s *session.Session) (*ssh.Client, func(), error) {
 	var lastErr error
@@ -134,16 +143,7 @@ func dialWithMultipleAuth(s *session.Session) (*ssh.Client, func(), error) {
 	for i, authMethod := range s.AuthMethods {
 		// 延迟解密密码（如果需要）
 		if authMethod.Type == "password" && authMethod.Password == "" && authMethod.EncryptedPassword != "" {
-			var decrypted string
-			var err error
-			switch s.PasswordSource {
-			case "xshell":
-				decrypted, err = xshell.DecryptPassword(authMethod.EncryptedPassword, s.MasterPassword)
-			case "mobaxterm":
-				decrypted, err = mobaxterm.DecryptPassword(authMethod.EncryptedPassword, s.MasterPassword)
-			default:
-				decrypted, err = securecrt.DecryptPassword(authMethod.EncryptedPassword, s.MasterPassword)
-			}
+			decrypted, err := decryptAuthMethodPassword(authMethod.EncryptedPassword, s.MasterPassword, s.PasswordSource)
 			if err != nil {
 				lastErr = fmt.Errorf("auth method %d (%s): failed to decrypt password: %w", i+1, authMethod.Type, err)
 				continue
@@ -158,38 +158,11 @@ func dialWithMultipleAuth(s *session.Session) (*ssh.Client, func(), error) {
 			continue
 		}
 
-		addr := fmt.Sprintf("%s:%d", s.Host, s.Port)
-		conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+		addr := net.JoinHostPort(s.Host, fmt.Sprintf("%d", s.Port))
+		client, combinedCleanup, err := dialSSHClientWithKeepalive(addr, config, cleanup)
 		if err != nil {
-			if cleanup != nil {
-				cleanup()
-			}
-			lastErr = fmt.Errorf("auth method %d (%s): connection timeout: %w", i+1, authMethod.Type, err)
-			continue
-		}
-
-		c, chans, reqs, err := ssh.NewClientConn(conn, addr, config)
-		if err != nil {
-			conn.Close()
-			if cleanup != nil {
-				cleanup()
-			}
 			lastErr = fmt.Errorf("auth method %d (%s): %w", i+1, authMethod.Type, err)
 			continue
-		}
-
-		client := ssh.NewClient(c, chans, reqs)
-
-		// 启动 keepalive goroutine，使用 context 控制生命周期
-		keepaliveCtx, keepaliveCancel := context.WithCancel(context.Background())
-		go startKeepalive(keepaliveCtx, client)
-
-		// 将 keepalive 取消和原有 cleanup 合并
-		combinedCleanup := func() {
-			keepaliveCancel()
-			if cleanup != nil {
-				cleanup()
-			}
 		}
 
 		return client, combinedCleanup, nil
@@ -214,17 +187,7 @@ func connectWithMultipleAuth(s *session.Session) error {
 	for i, authMethod := range s.AuthMethods {
 		// 延迟解密密码（如果需要）
 		if authMethod.Type == "password" && authMethod.Password == "" && authMethod.EncryptedPassword != "" {
-			// 根据密码来源选择解密器
-			var decrypted string
-			var err error
-			switch s.PasswordSource {
-			case "xshell":
-				decrypted, err = xshell.DecryptPassword(authMethod.EncryptedPassword, s.MasterPassword)
-			case "mobaxterm":
-				decrypted, err = mobaxterm.DecryptPassword(authMethod.EncryptedPassword, s.MasterPassword)
-			default:
-				decrypted, err = securecrt.DecryptPassword(authMethod.EncryptedPassword, s.MasterPassword)
-			}
+			decrypted, err := decryptAuthMethodPassword(authMethod.EncryptedPassword, s.MasterPassword, s.PasswordSource)
 			if err != nil {
 				lastErr = fmt.Errorf("auth method %d (%s): failed to decrypt password: %w", i+1, authMethod.Type, err)
 				continue
@@ -550,7 +513,7 @@ func getSSHAgentAuth() (ssh.AuthMethod, net.Conn, error) {
 
 // connectInteractive 建立交互式 SSH 连接
 func connectInteractive(s *session.Session, config *ssh.ClientConfig) error {
-	addr := fmt.Sprintf("%s:%d", s.Host, s.Port)
+	addr := net.JoinHostPort(s.Host, fmt.Sprintf("%d", s.Port))
 
 	// 设置连接超时为10秒（业界标准）
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
@@ -660,6 +623,8 @@ func connectInteractive(s *session.Session, config *ssh.ClientConfig) error {
 
 	// 等待会话结束
 	err = sess.Wait()
+	// 关闭 stdinPipe 使 stdin io.Copy goroutine 能退出
+	stdinPipe.Close()
 	if err != nil {
 		// ExitError 表示远程命令以非零状态退出，属于正常退出
 		if _, ok := err.(*ssh.ExitError); ok {
@@ -719,7 +684,7 @@ func ConnectWithIO(s *session.Session, stdin io.Reader, stdout, stderr io.Writer
 
 // connectWithIO 建立非交互式 SSH 连接（支持自定义 IO）
 func connectWithIO(s *session.Session, stdin io.Reader, stdout, stderr io.Writer, config *ssh.ClientConfig) error {
-	addr := fmt.Sprintf("%s:%d", s.Host, s.Port)
+	addr := net.JoinHostPort(s.Host, fmt.Sprintf("%d", s.Port))
 	client, err := ssh.Dial("tcp", addr, config)
 	if err != nil {
 		return fmt.Errorf("failed to dial: %w", err)
@@ -793,11 +758,15 @@ func connectWithIO(s *session.Session, stdin io.Reader, stdout, stderr io.Writer
 	}()
 
 	if err := sess.Wait(); err != nil {
+		// 关闭 stdinPipe 使 stdin io.Copy goroutine 能退出
+		stdinPipe.Close()
 		if exitErr, ok := err.(*ssh.ExitError); ok {
 			return fmt.Errorf("ssh session exited with code %d", exitErr.ExitStatus())
 		}
 		return err
 	}
+	// 关闭 stdinPipe 使 stdin io.Copy goroutine 能退出
+	stdinPipe.Close()
 
 	// 检查传输错误
 	select {

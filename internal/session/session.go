@@ -5,12 +5,43 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
-	"github.com/ketor/xsc/internal/mobaxterm"
-	"github.com/ketor/xsc/internal/securecrt"
-	"github.com/ketor/xsc/internal/xshell"
 	"gopkg.in/yaml.v3"
 )
+
+// PasswordDecrypter 密码解密接口
+type PasswordDecrypter interface {
+	Decrypt(encrypted, master string) (string, error)
+}
+
+// DecrypterFunc 函数适配器，将普通函数转为 PasswordDecrypter 接口
+type DecrypterFunc func(encrypted, master string) (string, error)
+
+// Decrypt 实现 PasswordDecrypter 接口
+func (f DecrypterFunc) Decrypt(encrypted, master string) (string, error) {
+	return f(encrypted, master)
+}
+
+var (
+	decryptersMu sync.RWMutex
+	decrypters   = make(map[string]PasswordDecrypter)
+)
+
+// RegisterDecrypter 注册密码解密器
+func RegisterDecrypter(source string, d PasswordDecrypter) {
+	decryptersMu.Lock()
+	defer decryptersMu.Unlock()
+	decrypters[source] = d
+}
+
+// GetDecrypter 获取已注册的密码解密器
+func GetDecrypter(source string) (PasswordDecrypter, bool) {
+	decryptersMu.RLock()
+	defer decryptersMu.RUnlock()
+	d, ok := decrypters[source]
+	return d, ok
+}
 
 // AuthType 定义认证类型
 type AuthType string
@@ -116,16 +147,11 @@ func (s *Session) ResolvePassword() error {
 	var decrypted string
 	var err error
 
-	switch s.PasswordSource {
-	case "securecrt":
-		decrypted, err = securecrt.DecryptPassword(s.EncryptedPassword, s.MasterPassword)
-	case "xshell":
-		decrypted, err = xshell.DecryptPassword(s.EncryptedPassword, s.MasterPassword)
-	case "mobaxterm":
-		decrypted, err = mobaxterm.DecryptPassword(s.EncryptedPassword, s.MasterPassword)
-	default:
-		return fmt.Errorf("unknown password source: %q", s.PasswordSource)
+	d, ok := GetDecrypter(s.PasswordSource)
+	if !ok {
+		return fmt.Errorf("unknown password source: %q (no decrypter registered)", s.PasswordSource)
 	}
+	decrypted, err = d.Decrypt(s.EncryptedPassword, s.MasterPassword)
 
 	if err != nil {
 		return fmt.Errorf("failed to decrypt password: %w", err)

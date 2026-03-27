@@ -183,10 +183,11 @@ func (tm *TransferManager) ListenProgress() tea.Cmd {
 			return nil
 		}
 
-		tm.mu.Lock()
-		defer tm.mu.Unlock()
+		// 在锁内更新任务状态并提取返回值，尽快释放锁
+		var msg TransferProgressMsg
+		var found bool
 
-		// 更新任务状态
+		tm.mu.Lock()
 		for i := range tm.tasks {
 			if tm.tasks[i].ID == update.taskID {
 				if update.done {
@@ -205,16 +206,21 @@ func (tm *TransferManager) ListenProgress() tea.Cmd {
 						tm.tasks[i].Progress = float64(update.transferred) / float64(tm.tasks[i].Size)
 					}
 				}
-				// 返回进度消息
-				return TransferProgressMsg{
+				msg = TransferProgressMsg{
 					TaskID:      update.taskID,
 					Progress:    tm.tasks[i].Progress,
 					Speed:       tm.tasks[i].Speed,
 					Transferred: tm.tasks[i].Transferred,
 				}
+				found = true
+				break
 			}
 		}
+		tm.mu.Unlock()
 
+		if found {
+			return msg
+		}
 		return nil
 	}
 }
@@ -311,6 +317,12 @@ func doUpload(ctx context.Context, src, dest string, client *sftp.Client, taskID
 	}
 	defer srcFile.Close()
 
+	// 读取源文件权限（失败则使用默认值 0644）
+	srcMode := os.FileMode(0644)
+	if info, err := srcFile.Stat(); err == nil {
+		srcMode = info.Mode().Perm()
+	}
+
 	// 确保远程目录存在（远程路径用 path.Dir，始终使用 / 分隔符）
 	destDir := path.Dir(dest)
 	if err := client.MkdirAll(destDir); err != nil {
@@ -328,6 +340,10 @@ func doUpload(ctx context.Context, src, dest string, client *sftp.Client, taskID
 		_ = client.Remove(dest)
 		return err
 	}
+
+	// best-effort 保留源文件权限
+	_ = client.Chmod(dest, srcMode)
+
 	return nil
 }
 
@@ -338,6 +354,12 @@ func doDownload(ctx context.Context, src, dest string, client *sftp.Client, task
 		return fmt.Errorf("打开远程文件失败: %w", err)
 	}
 	defer srcFile.Close()
+
+	// 读取远程文件权限（失败则使用默认值 0644）
+	srcMode := os.FileMode(0644)
+	if info, err := client.Stat(src); err == nil {
+		srcMode = info.Mode().Perm()
+	}
 
 	// 确保本地目录存在
 	destDir := filepath.Dir(dest)
@@ -356,6 +378,10 @@ func doDownload(ctx context.Context, src, dest string, client *sftp.Client, task
 		_ = os.Remove(dest)
 		return err
 	}
+
+	// best-effort 保留源文件权限
+	_ = os.Chmod(dest, srcMode)
+
 	return nil
 }
 

@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/ketor/xsc/internal/session"
+	"github.com/ketor/xsc/internal/shared"
 )
 
 // Mode TUI 模式
@@ -30,12 +31,8 @@ const (
 	ModeContextMenu                  // 右键上下文菜单模式
 )
 
-// ContextMenuItem 上下文菜单项
-type ContextMenuItem struct {
-	Label  string
-	Key    string
-	Action string
-}
+// ContextMenuItem 上下文菜单项（定义在 shared 包，此处为类型别名保持兼容）
+type ContextMenuItem = shared.ContextMenuItem
 
 // ContextMenu 上下文菜单
 type ContextMenu struct {

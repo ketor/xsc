@@ -2,8 +2,11 @@ package shared
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/term"
 
 	"github.com/ketor/xsc/internal/session"
 	"github.com/ketor/xsc/pkg/config"
@@ -213,4 +216,34 @@ func CollapseAll(node *session.SessionNode) {
 			CollapseAll(child)
 		}
 	}
+}
+
+// ContextMenuItem 定义右键菜单项（TUI 和 xftp 共用）
+type ContextMenuItem struct {
+	Label  string
+	Key    string
+	Action string
+}
+
+// ResolveSessionPassword 统一处理会话密码解析：
+// 1. ResolvePassword() 延迟解密（支持 XSC_MASTER_PASSWORD 环境变量）
+// 2. XSC_PASSWORD 环境变量注入
+// 3. 非 TTY 环境密码缺失检测
+func ResolveSessionPassword(s *session.Session) error {
+	if err := s.ResolvePassword(); err != nil {
+		return fmt.Errorf("密码解密失败: %w", err)
+	}
+	// XSC_PASSWORD 环境变量注入
+	if s.AuthType == session.AuthTypePassword && s.Password == "" {
+		if envPwd := os.Getenv("XSC_PASSWORD"); envPwd != "" {
+			s.Password = envPwd
+		}
+	}
+	// 非 TTY 环境下密码缺失，立即失败而非卡死
+	if s.AuthType == session.AuthTypePassword && s.Password == "" {
+		if !term.IsTerminal(int(os.Stdin.Fd())) {
+			return fmt.Errorf("密码未设置且非 TTY 环境（设置 XSC_PASSWORD 环境变量）")
+		}
+	}
+	return nil
 }

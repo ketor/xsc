@@ -9,14 +9,23 @@ import (
 	"time"
 
 	"github.com/pkg/sftp"
-	"golang.org/x/term"
 
+	"github.com/ketor/xsc/internal/mobaxterm"
+	"github.com/ketor/xsc/internal/securecrt"
 	"github.com/ketor/xsc/internal/session"
 	"github.com/ketor/xsc/internal/shared"
 	internalssh "github.com/ketor/xsc/internal/ssh"
 	"github.com/ketor/xsc/internal/xftp"
+	"github.com/ketor/xsc/internal/xshell"
 	"github.com/ketor/xsc/pkg/version"
 )
+
+func init() {
+	// 注册密码解密器
+	session.RegisterDecrypter("securecrt", session.DecrypterFunc(securecrt.DecryptPassword))
+	session.RegisterDecrypter("xshell", session.DecrypterFunc(xshell.DecryptPassword))
+	session.RegisterDecrypter("mobaxterm", session.DecrypterFunc(mobaxterm.DecryptPassword))
+}
 
 func main() {
 	if len(os.Args) < 2 {
@@ -138,23 +147,8 @@ func hasJSONFlag(args []string) (bool, []string) {
 	return jsonOutput, filtered
 }
 
-// resolveSessionPassword 统一处理会话密码解析
-func resolveSessionPassword(s *session.Session) error {
-	if err := s.ResolvePassword(); err != nil {
-		return fmt.Errorf("密码解密失败: %w", err)
-	}
-	if s.AuthType == session.AuthTypePassword && s.Password == "" {
-		if envPwd := os.Getenv("XSC_PASSWORD"); envPwd != "" {
-			s.Password = envPwd
-		}
-	}
-	if s.AuthType == session.AuthTypePassword && s.Password == "" {
-		if !term.IsTerminal(int(os.Stdin.Fd())) {
-			return fmt.Errorf("密码未设置且非 TTY 环境（设置 XSC_PASSWORD 环境变量）")
-		}
-	}
-	return nil
-}
+// resolveSessionPassword 统一处理会话密码解析（委托到 shared 包）
+var resolveSessionPassword = shared.ResolveSessionPassword
 
 // connectSFTP 封装会话查找、密码解密、SSH 连接和 SFTP 客户端创建
 func connectSFTP(sessionPath string) (*sftp.Client, func(), error) {

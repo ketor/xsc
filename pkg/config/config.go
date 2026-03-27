@@ -67,21 +67,21 @@ func (c SSHConfig) IsStrictHostKey() bool {
 type SecureCRTConfig struct {
 	Enabled     bool   `yaml:"enabled"`
 	SessionPath string `yaml:"session_path"`
-	Password    string `yaml:"password"`
+	Password    string `yaml:"-"` // 主密码，不持久化到配置文件，通过环境变量或交互式输入提供
 }
 
 // XShellConfig XShell配置
 type XShellConfig struct {
 	Enabled     bool   `yaml:"enabled"`
 	SessionPath string `yaml:"session_path"`
-	Password    string `yaml:"password"`
+	Password    string `yaml:"-"` // 主密码，不持久化到配置文件，通过环境变量或交互式输入提供
 }
 
 // MobaXtermConfig MobaXterm配置
 type MobaXtermConfig struct {
 	Enabled     bool   `yaml:"enabled"`
 	SessionPath string `yaml:"session_path"`
-	Password    string `yaml:"password"`
+	Password    string `yaml:"-"` // 主密码，不持久化到配置文件，通过环境变量或交互式输入提供
 }
 
 var (

@@ -357,8 +357,11 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // validateFileName 验证文件/目录名不包含路径穿越字符
 func validateFileName(name string) error {
-	if strings.Contains(name, "/") || strings.Contains(name, "..") {
-		return fmt.Errorf("名称不能包含 '/' 或 '..'")
+	if strings.Contains(name, "/") {
+		return fmt.Errorf("名称不能包含 '/'")
+	}
+	if name == ".." || strings.HasPrefix(name, "../") || strings.Contains(name, "/../") || strings.HasSuffix(name, "/..") {
+		return fmt.Errorf("名称不能包含路径穿越 '..'")
 	}
 	return nil
 }

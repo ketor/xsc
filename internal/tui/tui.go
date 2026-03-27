@@ -194,12 +194,8 @@ type newSessionEditorCompleteMsg struct {
 	targetPath string
 }
 
-// ContextMenuItem 右键菜单项
-type ContextMenuItem struct {
-	Label  string
-	Key    string
-	Action string
-}
+// ContextMenuItem 右键菜单项（定义在 shared 包，此处为类型别名保持兼容）
+type ContextMenuItem = shared.ContextMenuItem
 
 // ContextMenu 右键上下文菜单状态
 type ContextMenu struct {
