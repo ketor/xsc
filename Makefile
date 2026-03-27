@@ -35,11 +35,11 @@ build-all: build
 clean:
 	rm -rf $(BUILD_DIR)
 
-# 安装到系统（先 make build，再 sudo make install）
-install:
-	install -m 755 $(BUILD_DIR)/$(BINARY_NAME) $(INSTALL_DIR)/
-	install -m 755 $(BUILD_DIR)/$(BINARY_XFTP) $(INSTALL_DIR)/
-	install -m 755 $(BUILD_DIR)/$(BINARY_MCP) $(INSTALL_DIR)/
+# 安装到系统（自动 sudo）
+install: build
+	sudo install -m 755 $(BUILD_DIR)/$(BINARY_NAME) $(INSTALL_DIR)/
+	sudo install -m 755 $(BUILD_DIR)/$(BINARY_XFTP) $(INSTALL_DIR)/
+	sudo install -m 755 $(BUILD_DIR)/$(BINARY_MCP) $(INSTALL_DIR)/
 
 # 卸载
 uninstall:
