@@ -6,7 +6,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
+	"golang.org/x/text/encoding/charmap"
 	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
@@ -46,13 +48,17 @@ func LoadSessions(config Config) ([]*Session, error) {
 		return nil, fmt.Errorf("读取文件失败: %w", err)
 	}
 
-	// 使用 GBK 编码解码（中文 Windows 环境下 MobaXterm 使用 GBK 编码）
-	decoded, err := simplifiedchinese.GBK.NewDecoder().Bytes(data)
-	if err != nil {
-		// 解码失败时回退到原始数据
-		decoded = data
+	// 自动检测编码：UTF-8 → GBK → Windows-1252
+	var content string
+	if utf8.Valid(data) {
+		content = string(data)
+	} else if decoded, err := simplifiedchinese.GBK.NewDecoder().Bytes(data); err == nil {
+		content = string(decoded)
+	} else if decoded, err := charmap.Windows1252.NewDecoder().Bytes(data); err == nil {
+		content = string(decoded)
+	} else {
+		content = string(data)
 	}
-	content := string(decoded)
 
 	// 解析所有 Bookmarks sections
 	sections := parseBookmarksSections(content)
