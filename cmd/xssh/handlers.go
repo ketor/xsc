@@ -219,14 +219,15 @@ func printPingResult(p *cli.Printer, r PingResult) {
 
 // AddParams 是 add 命令的参数
 type AddParams struct {
-	Path     string
-	Host     string
-	Port     int    // 默认 22
-	User     string // 默认 root
-	AuthType string // password|key|agent，默认 password
-	Password string
-	KeyPath  string
-	JSON     bool
+	Path      string
+	Host      string
+	Port      int    // 默认 22
+	User      string // 默认 root
+	AuthType  string // password|key|agent，默认 password
+	Password  string
+	KeyPath   string
+	ProxyJump string
+	JSON      bool
 }
 
 // AddResult 是 add 命令的输出结构
@@ -280,6 +281,9 @@ func handleAdd(_ context.Context, params AddParams, p *cli.Printer) int {
 	}
 	if params.KeyPath != "" {
 		s.KeyPath = params.KeyPath
+	}
+	if params.ProxyJump != "" {
+		s.ProxyJump = params.ProxyJump
 	}
 
 	// 会话文件路径
@@ -657,14 +661,15 @@ func parsePingArgs(args []string) PingParams {
 
 // EditParams 是 edit 命令的参数
 type EditParams struct {
-	Path     string
-	Host     string
-	Port     int // 0 表示不修改
-	User     string
-	AuthType string
-	Password string
-	KeyPath  string
-	JSON     bool
+	Path      string
+	Host      string
+	Port      int // 0 表示不修改
+	User      string
+	AuthType  string
+	Password  string
+	KeyPath   string
+	ProxyJump string
+	JSON      bool
 }
 
 // EditResult 是 edit 命令的输出结构
@@ -710,6 +715,9 @@ func handleEdit(_ context.Context, params EditParams, p *cli.Printer) int {
 	}
 	if params.KeyPath != "" {
 		s.KeyPath = params.KeyPath
+	}
+	if params.ProxyJump != "" {
+		s.ProxyJump = params.ProxyJump
 	}
 
 	// 获取会话文件路径

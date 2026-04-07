@@ -34,14 +34,14 @@ func TestSessionValidate(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "password auth without password",
+			name: "password auth without password - allows interactive input",
 			session: Session{
 				Host:     "192.168.1.1",
 				Port:     22,
 				User:     "root",
 				AuthType: AuthTypePassword,
 			},
-			wantErr: true,
+			wantErr: false,
 		},
 		{
 			name: "agent auth - no extra required",

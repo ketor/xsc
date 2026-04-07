@@ -70,6 +70,7 @@ type Session struct {
 	Password    string       `yaml:"password,omitempty"`
 	KeyPath     string       `yaml:"key_path,omitempty"`
 	Description string       `yaml:"description,omitempty"`
+	ProxyJump   string       `yaml:"proxy_jump,omitempty"`   // 跳板机会话路径（如 "极光云/10.220.75.62 (zetyun)"）
 	AuthMethods []AuthMethod `yaml:"auth_methods,omitempty"` // 认证方法列表（按优先级）
 
 	// 内部字段
@@ -102,9 +103,7 @@ func (s *Session) Validate() error {
 
 	switch s.AuthType {
 	case AuthTypePassword:
-		if s.Password == "" {
-			return fmt.Errorf("password is required when auth_type is 'password'")
-		}
+		// 密码可以为空，连接时交互式输入
 	case AuthTypeKey:
 		if s.KeyPath == "" {
 			return fmt.Errorf("key_path is required when auth_type is 'key'")
