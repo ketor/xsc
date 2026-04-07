@@ -38,6 +38,17 @@ func Connect(s *session.Session) error {
 		}
 	}
 
+	// 密码认证但未设置密码时，交互式输入
+	if s.AuthType == session.AuthTypePassword && s.Password == "" {
+		fmt.Printf("Password for %s@%s: ", s.User, s.Host)
+		pw, err := term.ReadPassword(int(syscall.Stdin))
+		fmt.Println()
+		if err != nil {
+			return fmt.Errorf("failed to read password: %w", err)
+		}
+		s.Password = string(pw)
+	}
+
 	switch s.AuthType {
 	case session.AuthTypePassword, session.AuthTypeKey, session.AuthTypeAgent:
 		return connectSingle(s)
@@ -66,13 +77,95 @@ func Dial(s *session.Session) (*ssh.Client, func(), error) {
 		}
 	}
 
+	// 密码认证但未设置密码时，交互式输入
+	if s.AuthType == session.AuthTypePassword && s.Password == "" {
+		fmt.Printf("Password for %s@%s: ", s.User, s.Host)
+		pw, err := term.ReadPassword(int(syscall.Stdin))
+		fmt.Println()
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to read password: %w", err)
+		}
+		s.Password = string(pw)
+	}
+
 	config, cleanup, err := getSSHConfig(s)
 	if err != nil {
 		return nil, nil, err
 	}
 
 	addr := net.JoinHostPort(s.Host, fmt.Sprintf("%d", s.Port))
+
+	// ProxyJump 支持：通过跳板机连接
+	if s.ProxyJump != "" {
+		return dialViaProxy(s, config, cleanup)
+	}
+
 	return dialSSHClientWithKeepalive(addr, config, cleanup)
+}
+
+// dialViaProxy 通过跳板机建立 SSH 连接
+func dialViaProxy(s *session.Session, targetConfig *ssh.ClientConfig, targetCleanup func()) (*ssh.Client, func(), error) {
+	// 加载跳板机会话
+	proxySession, err := loadProxySession(s.ProxyJump)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load proxy session: %w", err)
+	}
+
+	// 连接跳板机
+	proxyClient, proxyCleanup, err := Dial(proxySession)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to connect to proxy %s: %w", s.ProxyJump, err)
+	}
+
+	// 通过跳板机拨号到目标
+	targetAddr := net.JoinHostPort(s.Host, fmt.Sprintf("%d", s.Port))
+	proxyConn, err := proxyClient.Dial("tcp", targetAddr)
+	if err != nil {
+		proxyClient.Close()
+		if proxyCleanup != nil {
+			proxyCleanup()
+		}
+		return nil, nil, fmt.Errorf("failed to dial target via proxy: %w", err)
+	}
+
+	// 通过代理连接创建 SSH 客户端
+	c, chans, reqs, err := ssh.NewClientConn(proxyConn, targetAddr, targetConfig)
+	if err != nil {
+		proxyConn.Close()
+		proxyClient.Close()
+		if proxyCleanup != nil {
+			proxyCleanup()
+		}
+		return nil, nil, fmt.Errorf("failed to create SSH connection via proxy: %w", err)
+	}
+
+	client := ssh.NewClient(c, chans, reqs)
+
+	keepaliveCtx, keepaliveCancel := context.WithCancel(context.Background())
+	go startKeepalive(keepaliveCtx, client)
+
+	combinedCleanup := func() {
+		keepaliveCancel()
+		proxyClient.Close()
+		if proxyCleanup != nil {
+			proxyCleanup()
+		}
+		if targetCleanup != nil {
+			targetCleanup()
+		}
+	}
+
+	return client, combinedCleanup, nil
+}
+
+// loadProxySession 加载跳板机会话
+func loadProxySession(proxyJump string) (*session.Session, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get home dir: %w", err)
+	}
+	sessionsDir := filepath.Join(home, ".xsc", "sessions")
+	return session.FindSession(sessionsDir, proxyJump)
 }
 
 // startKeepalive 启动 keepalive 心跳，监听 context 取消
@@ -513,22 +606,37 @@ func getSSHAgentAuth() (ssh.AuthMethod, net.Conn, error) {
 
 // connectInteractive 建立交互式 SSH 连接
 func connectInteractive(s *session.Session, config *ssh.ClientConfig) error {
-	addr := net.JoinHostPort(s.Host, fmt.Sprintf("%d", s.Port))
+	var client *ssh.Client
+	var proxyCleanup func()
 
-	// 设置连接超时为10秒（业界标准）
-	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
-	if err != nil {
-		return fmt.Errorf("connection timeout: %w", err)
-	}
+	if s.ProxyJump != "" {
+		// 通过跳板机连接
+		var err error
+		client, proxyCleanup, err = dialViaProxy(s, config, nil)
+		if err != nil {
+			return fmt.Errorf("failed to connect via proxy: %w", err)
+		}
+	} else {
+		addr := net.JoinHostPort(s.Host, fmt.Sprintf("%d", s.Port))
 
-	// 使用已建立的连接创建 SSH 客户端
-	c, chans, reqs, err := ssh.NewClientConn(conn, addr, config)
-	if err != nil {
-		conn.Close()
-		return fmt.Errorf("failed to create SSH connection: %w", err)
+		// 设置连接超时为10秒（业界标准）
+		conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+		if err != nil {
+			return fmt.Errorf("connection timeout: %w", err)
+		}
+
+		// 使用已建立的连接创建 SSH 客户端
+		c, chans, reqs, err := ssh.NewClientConn(conn, addr, config)
+		if err != nil {
+			conn.Close()
+			return fmt.Errorf("failed to create SSH connection: %w", err)
+		}
+		client = ssh.NewClient(c, chans, reqs)
 	}
-	client := ssh.NewClient(c, chans, reqs)
 	defer client.Close()
+	if proxyCleanup != nil {
+		defer proxyCleanup()
+	}
 
 	sess, err := client.NewSession()
 	if err != nil {

@@ -387,9 +387,9 @@ func parseImportArgs() bool {
 
 // sessionFlags 解析 --host/--port/--user/--auth-type/--password/--key/--json 等通用 flag
 type sessionFlags struct {
-	Path, Host, User, AuthType, Password, KeyPath string
-	Port                                          int
-	JSON                                          bool
+	Path, Host, User, AuthType, Password, KeyPath, ProxyJump string
+	Port                                                      int
+	JSON                                                      bool
 }
 
 func parseSessionFlags(args []string) sessionFlags {
@@ -428,6 +428,11 @@ func parseSessionFlags(args []string) sessionFlags {
 				i++
 				f.KeyPath = args[i]
 			}
+		case "--proxy-jump":
+			if i+1 < len(args) {
+				i++
+				f.ProxyJump = args[i]
+			}
 		case "--json":
 			f.JSON = true
 		default:
@@ -445,7 +450,8 @@ func parseAddArgs(args []string) AddParams {
 	f := parseSessionFlags(args)
 	return AddParams{
 		Path: f.Path, Host: f.Host, Port: f.Port, User: f.User,
-		AuthType: f.AuthType, Password: f.Password, KeyPath: f.KeyPath, JSON: f.JSON,
+		AuthType: f.AuthType, Password: f.Password, KeyPath: f.KeyPath,
+		ProxyJump: f.ProxyJump, JSON: f.JSON,
 	}
 }
 
@@ -467,7 +473,8 @@ func parseEditArgs(args []string) EditParams {
 	f := parseSessionFlags(args)
 	return EditParams{
 		Path: f.Path, Host: f.Host, Port: f.Port, User: f.User,
-		AuthType: f.AuthType, Password: f.Password, KeyPath: f.KeyPath, JSON: f.JSON,
+		AuthType: f.AuthType, Password: f.Password, KeyPath: f.KeyPath,
+		ProxyJump: f.ProxyJump, JSON: f.JSON,
 	}
 }
 

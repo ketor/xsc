@@ -7,7 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	"golang.org/x/text/encoding/charmap"
+	"golang.org/x/text/encoding/simplifiedchinese"
 )
 
 // Session 表示一个 MobaXterm 会话
@@ -46,8 +46,8 @@ func LoadSessions(config Config) ([]*Session, error) {
 		return nil, fmt.Errorf("读取文件失败: %w", err)
 	}
 
-	// 使用 Windows-1252 编码解码
-	decoded, err := charmap.Windows1252.NewDecoder().Bytes(data)
+	// 使用 GBK 编码解码（中文 Windows 环境下 MobaXterm 使用 GBK 编码）
+	decoded, err := simplifiedchinese.GBK.NewDecoder().Bytes(data)
 	if err != nil {
 		// 解码失败时回退到原始数据
 		decoded = data
@@ -199,10 +199,22 @@ func parseSessionLine(line, filePath, folder string) (*Session, error) {
 	// 反转义会话名
 	sessionName = unescapeSpecialChars(sessionName)
 
-	// 取 # 之前的部分（# 后面是字体等显示配置）
+	// 处理 MobaXterm 会话值格式
+	// 新格式: #ImgNum#Type%Host%Port%User%...#FontConfig%...
+	// 旧格式: Type%Host%Port%User%...#FontConfig%...
 	mainPart := value
-	if hashIdx := strings.Index(value, "#"); hashIdx >= 0 {
-		mainPart = value[:hashIdx]
+
+	// 跳过前导 #ImgNum 前缀（如 #109）
+	if strings.HasPrefix(mainPart, "#") {
+		// 找到第二个 # 的位置，跳过 #ImgNum 前缀
+		if secondHash := strings.Index(mainPart[1:], "#"); secondHash >= 0 {
+			mainPart = mainPart[secondHash+2:] // 跳过 #ImgNum#，剩余 Type%Host%...#FontConfig%...
+		}
+	}
+
+	// 取 # 之前的部分（# 后面是字体等显示配置）
+	if hashIdx := strings.Index(mainPart, "#"); hashIdx >= 0 {
+		mainPart = mainPart[:hashIdx]
 	}
 
 	// 按 % 分割字段
@@ -212,7 +224,7 @@ func parseSessionLine(line, filePath, folder string) (*Session, error) {
 	}
 
 	// 检查类型（fields[0]），SSH = 0
-	sessionType, err := strconv.Atoi(fields[0])
+	sessionType, err := strconv.Atoi(strings.TrimSpace(fields[0]))
 	if err != nil || sessionType != 0 {
 		// 不是 SSH 类型，跳过
 		return nil, fmt.Errorf("非 SSH 会话类型: %s", fields[0])
