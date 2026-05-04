@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.2] - 2026-05-05
+
+v1.4.1 修复后续的护栏加固。无 production 行为改动（除 Validate 多接受 4 个 SSH
+密钥算法别名）。所有 v1.4.1 用户可平滑升级。
+
+### Added
+- **认证**: `Session.Validate()` 现在接受更完整的 SSH 标准/SecureCRT 别名集合。除
+  v1.4.1 已支持的 `publickey` 外，新增 `rsa`、`dsa`、`ecdsa`、`ed25519` 也都规范化
+  为内部规范的 `key`。SecureCRT 的 `Authentication` 字段把这些算法名当作 publickey
+  的同义词使用，用户手写 YAML 时也常这么写。
+- **测试**: 新增 import round-trip 端到端防回归测试
+  （`TestImportRoundTrip_PreservesFieldsThroughDisk` /
+  `TestImportRoundTrip_PublicKeyAuth`）。覆盖
+  `buildXSSHSessionFromImport → SaveSession → LoadSession → 字段相等性`
+  完整链路，捕获 YAML 序列化层的字段丢失回归（v1.4.1 修复的 ceeb45b 那种类型）。
+  反向验证有效性：临时退化 helper 后两个测试均能给出明确失败信息。
+- **测试**: 新增 `TestSessionValidateAuthTypeAliases`（表驱动 5 子测试）覆盖每个
+  别名分别独立验证。
+
+### Changed
+- **重构**: `Session.Validate()` 把硬编码的 `publickey` 别名比较抽出成 `keyAuthAliases`
+  map，便于后续添加更多 SSH 标准术语而不修改控制流。
+
 ## [1.4.1] - 2026-05-05
 
 ### Fixed

@@ -178,6 +178,38 @@ func TestSessionValidateKeyAuthNonexistentFile(t *testing.T) {
 	}
 }
 
+// TestSessionValidateAuthTypeAliases 验证 SSH 标准/SecureCRT 常见别名被规范化为 key
+//
+// 来源说明：
+//   - "publickey" — SSH 协议标准术语，OpenSSH/SecureCRT 都使用
+//   - "rsa"/"dsa"/"ecdsa"/"ed25519" — 具体密钥算法名，SecureCRT 的 Authentication 字段
+//     和某些客户端把它们当作 publickey 的同义词（见 internal/securecrt/parser.go
+//     parseAuthMethods 的实际处理）
+func TestSessionValidateAuthTypeAliases(t *testing.T) {
+	tmpDir := t.TempDir()
+	keyPath := filepath.Join(tmpDir, "test_key")
+	if err := os.WriteFile(keyPath, []byte("fake-key"), 0600); err != nil {
+		t.Fatalf("创建临时密钥文件失败: %v", err)
+	}
+
+	aliases := []string{"publickey", "rsa", "dsa", "ecdsa", "ed25519"}
+	for _, alias := range aliases {
+		t.Run(alias, func(t *testing.T) {
+			s := Session{
+				Host:     "192.168.1.1",
+				AuthType: AuthType(alias),
+				KeyPath:  keyPath,
+			}
+			if err := s.Validate(); err != nil {
+				t.Errorf("auth_type=%q 应被接受为 key 的别名，Validate 返回: %v", alias, err)
+			}
+			if s.AuthType != AuthTypeKey {
+				t.Errorf("auth_type=%q 应规范化为 %q，实际 %q", alias, AuthTypeKey, s.AuthType)
+			}
+		})
+	}
+}
+
 // TestSessionValidatePublicKeyAuthAccepted 验证 auth_type: publickey 被接受为 key 的别名
 // 回归保护：SecureCRT 导出 / SSH 协议都用 "publickey" 作为标准术语，
 // Validate 不应该把它判为 invalid 而连带让整个 session 显示 [invalid]。

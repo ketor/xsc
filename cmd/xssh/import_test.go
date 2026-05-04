@@ -1,9 +1,12 @@
 package main
 
 import (
+	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/ketor/xsc/internal/securecrt"
+	"github.com/ketor/xsc/internal/session"
 )
 
 // TestBuildXSSHSessionFromImport_PreservesAuthMethods 回归保护 bug 2/3：
@@ -115,5 +118,126 @@ func TestBuildXSSHSessionFromImport_SingleAuth(t *testing.T) {
 	}
 	if len(got.AuthMethods) != 0 {
 		t.Errorf("expected no AuthMethods, got %d", len(got.AuthMethods))
+	}
+}
+
+// TestImportRoundTrip_PreservesFieldsThroughDisk 端到端 round-trip 防回归测试：
+//
+//	import_data → buildXSSHSessionFromImport → SaveSession (YAML on disk)
+//	            → LoadSession                → field equality assertion
+//
+// 这条管道是 v1.4.1 修复的核心路径，但当前 4 个 helper 测试只断言内存中的 helper 输出，
+// 没覆盖 YAML 序列化/反序列化是否会丢字段。如果未来有人改 Session 的 yaml tag 或
+// 改 SaveSession 的写法，helper 测试可能仍 PASS 但磁盘上读回的 session 字段缺失，
+// 用户在 TUI 里又会看到回归症状。本测试在文件层面把这种回归切断。
+func TestImportRoundTrip_PreservesFieldsThroughDisk(t *testing.T) {
+	imp := importSession{
+		Name:     "round-trip-multi-auth",
+		Password: "DecryptedSecret",
+		SessionData: map[string]interface{}{
+			"host":      "10.20.30.40",
+			"port":      2222,
+			"user":      "ops",
+			"auth_type": "password",
+			"auth_methods": []securecrt.AuthMethod{
+				{Type: "password", Priority: 0, Password: "ENCRYPTED_BLOB_IGNORED_BY_HELPER"},
+				{Type: "publickey", Priority: 1, KeyFile: "/home/ops/.ssh/id_ed25519"},
+				{Type: "keyboard-interactive", Priority: 2},
+				{Type: "gssapi", Priority: 3},
+			},
+		},
+	}
+
+	built := buildXSSHSessionFromImport(imp)
+
+	// 写到磁盘（与生产 import-securecrt 相同的 SaveSession 路径）
+	tmpDir := t.TempDir()
+	yamlPath := filepath.Join(tmpDir, "round-trip-multi-auth.yaml")
+	if err := session.SaveSession(built, yamlPath); err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+
+	// 从磁盘读回
+	loaded, err := session.LoadSession(yamlPath)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+
+	// LoadSession 会跑 Validate，AuthType=password 不需要 key_path 检查，应当 Valid
+	if !loaded.Valid {
+		t.Fatalf("loaded session marked invalid: %v", loaded.Error)
+	}
+
+	// 基础字段
+	if loaded.Host != "10.20.30.40" {
+		t.Errorf("Host: got %q want 10.20.30.40", loaded.Host)
+	}
+	if loaded.Port != 2222 {
+		t.Errorf("Port: got %d want 2222", loaded.Port)
+	}
+	if loaded.User != "ops" {
+		t.Errorf("User: got %q want ops", loaded.User)
+	}
+	if loaded.AuthType != session.AuthTypePassword {
+		t.Errorf("AuthType: got %q want password", loaded.AuthType)
+	}
+
+	// 解密后的密码（顶层 + 多 auth 中的 password 项）
+	if loaded.Password != "DecryptedSecret" {
+		t.Errorf("top-level Password lost through round-trip: got %q", loaded.Password)
+	}
+
+	// AuthMethods 完整保留（顺序、类型、KeyPath、解密后密码）
+	wantMethods := []session.AuthMethod{
+		{Type: "password", Priority: 0, Password: "DecryptedSecret"},
+		{Type: "publickey", Priority: 1, KeyPath: "/home/ops/.ssh/id_ed25519"},
+		{Type: "keyboard-interactive", Priority: 2},
+		{Type: "gssapi", Priority: 3},
+	}
+	if !reflect.DeepEqual(loaded.AuthMethods, wantMethods) {
+		t.Errorf("AuthMethods round-trip mismatch:\n  got:  %#v\n  want: %#v",
+			loaded.AuthMethods, wantMethods)
+	}
+}
+
+// TestImportRoundTrip_PublicKeyAuth 验证 publickey 类型 session 经磁盘 round-trip 后
+// 1) 不被误判 [invalid]，2) AuthType 规范化为 key（v1.4.1 修复行为）。
+func TestImportRoundTrip_PublicKeyAuth(t *testing.T) {
+	imp := importSession{
+		Name: "round-trip-publickey",
+		SessionData: map[string]interface{}{
+			"host":      "10.20.30.41",
+			"port":      22,
+			"user":      "deploy",
+			"auth_type": "publickey",
+			"auth_methods": []securecrt.AuthMethod{
+				{Type: "publickey", Priority: 0},
+				{Type: "password", Priority: 1},
+			},
+		},
+	}
+
+	built := buildXSSHSessionFromImport(imp)
+
+	tmpDir := t.TempDir()
+	yamlPath := filepath.Join(tmpDir, "round-trip-publickey.yaml")
+	if err := session.SaveSession(built, yamlPath); err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+
+	loaded, err := session.LoadSession(yamlPath)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+
+	if !loaded.Valid {
+		t.Fatalf("publickey session should be valid after round-trip, err=%v", loaded.Error)
+	}
+	// Validate 把 publickey 规范化为 key
+	if loaded.AuthType != session.AuthTypeKey {
+		t.Errorf("AuthType after round-trip: got %q want key (publickey alias)", loaded.AuthType)
+	}
+	if len(loaded.AuthMethods) != 2 {
+		t.Errorf("AuthMethods length: got %d want 2", len(loaded.AuthMethods))
 	}
 }

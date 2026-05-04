@@ -52,6 +52,23 @@ const (
 	AuthTypeAgent    AuthType = "agent"
 )
 
+// keyAuthAliases 列出 auth_type 中所有应被规范化为 AuthTypeKey 的标准/常见别名。
+//
+// 来源：
+//   - "publickey" 是 SSH 协议中 USERAUTH_REQUEST 使用的标准方法名，OpenSSH 配置文件
+//     PreferredAuthentications 也用这个值，SecureCRT/Xshell 等客户端导出格式同样使用。
+//   - "rsa"/"dsa"/"ecdsa"/"ed25519" 是具体密钥算法名。SecureCRT 的 Authentication
+//     字段把它们当作 publickey 的同义词（见 internal/securecrt/parser.go
+//     parseAuthMethods 的实际映射），用户手写 YAML 时也常用这些标识。
+//   - 全部规范化到内部规范的 AuthTypeKey，让 Validate / 上层渲染路径不必各自重复识别。
+var keyAuthAliases = map[AuthType]bool{
+	"publickey": true,
+	"rsa":       true,
+	"dsa":       true,
+	"ecdsa":     true,
+	"ed25519":   true,
+}
+
 // AuthMethod 定义认证方法配置
 type AuthMethod struct {
 	Type              string `yaml:"type"`                         // 认证类型: password, key, agent, keyboard-interactive
@@ -100,9 +117,9 @@ func (s *Session) Validate() error {
 	if s.AuthType == "" {
 		s.AuthType = AuthTypeAgent
 	}
-	// "publickey" 是 SSH 协议和 SecureCRT 导出器都使用的标准术语，
-	// 规范化为内部规范的 AuthTypeKey 以保持上层处理一致。
-	if s.AuthType == "publickey" {
+	// 规范化 SSH 标准术语和常见密钥算法名为内部 AuthTypeKey
+	// （详见 keyAuthAliases 上的注释）。
+	if keyAuthAliases[s.AuthType] {
 		s.AuthType = AuthTypeKey
 	}
 
