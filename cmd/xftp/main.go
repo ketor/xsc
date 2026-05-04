@@ -17,6 +17,7 @@ import (
 	internalssh "github.com/ketor/xsc/internal/ssh"
 	"github.com/ketor/xsc/internal/xftp"
 	"github.com/ketor/xsc/internal/xshell"
+	"github.com/ketor/xsc/pkg/config"
 	"github.com/ketor/xsc/pkg/version"
 )
 
@@ -35,6 +36,17 @@ func main() {
 	}
 
 	command := os.Args[1]
+
+	// 解密外部 session 前补齐主密码（TTY 场景下交互式提示）
+	switch command {
+	case "tui", "connect", "ls", "cat", "get", "put", "mkdir", "rm", "stat":
+		if cfg, err := config.LoadGlobalConfig(); err == nil {
+			if perr := shared.EnsureMasterPasswords(cfg); perr != nil {
+				fmt.Fprintf(os.Stderr, "读取主密码失败: %v\n", perr)
+				os.Exit(1)
+			}
+		}
+	}
 
 	switch command {
 	case "tui":

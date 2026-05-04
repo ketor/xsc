@@ -64,24 +64,52 @@ func (c SSHConfig) IsStrictHostKey() bool {
 }
 
 // SecureCRTConfig SecureCRT配置
+//
+// Password 字段允许从 YAML 读入（便于本地 0600 配置自管），但 SaveGlobalConfig
+// 永远不会把 Password 写回 YAML（见 MarshalYAML），避免保存动作把内存中的密码
+// 意外落盘到配置文件。
 type SecureCRTConfig struct {
 	Enabled     bool   `yaml:"enabled"`
 	SessionPath string `yaml:"session_path"`
-	Password    string `yaml:"-"` // 主密码，不持久化到配置文件，通过环境变量或交互式输入提供
+	Password    string `yaml:"password,omitempty"`
 }
 
-// XShellConfig XShell配置
+// MarshalYAML 序列化时跳过 Password 字段
+func (c SecureCRTConfig) MarshalYAML() (interface{}, error) {
+	return struct {
+		Enabled     bool   `yaml:"enabled"`
+		SessionPath string `yaml:"session_path"`
+	}{c.Enabled, c.SessionPath}, nil
+}
+
+// XShellConfig XShell配置（Password 处理同 SecureCRTConfig）
 type XShellConfig struct {
 	Enabled     bool   `yaml:"enabled"`
 	SessionPath string `yaml:"session_path"`
-	Password    string `yaml:"-"` // 主密码，不持久化到配置文件，通过环境变量或交互式输入提供
+	Password    string `yaml:"password,omitempty"`
 }
 
-// MobaXtermConfig MobaXterm配置
+// MarshalYAML 序列化时跳过 Password 字段
+func (c XShellConfig) MarshalYAML() (interface{}, error) {
+	return struct {
+		Enabled     bool   `yaml:"enabled"`
+		SessionPath string `yaml:"session_path"`
+	}{c.Enabled, c.SessionPath}, nil
+}
+
+// MobaXtermConfig MobaXterm配置（Password 处理同 SecureCRTConfig）
 type MobaXtermConfig struct {
 	Enabled     bool   `yaml:"enabled"`
 	SessionPath string `yaml:"session_path"`
-	Password    string `yaml:"-"` // 主密码，不持久化到配置文件，通过环境变量或交互式输入提供
+	Password    string `yaml:"password,omitempty"`
+}
+
+// MarshalYAML 序列化时跳过 Password 字段
+func (c MobaXtermConfig) MarshalYAML() (interface{}, error) {
+	return struct {
+		Enabled     bool   `yaml:"enabled"`
+		SessionPath string `yaml:"session_path"`
+	}{c.Enabled, c.SessionPath}, nil
 }
 
 var (
@@ -140,8 +168,37 @@ func LoadGlobalConfig() (*GlobalConfig, error) {
 		}
 	}
 
+	applyPasswordEnvOverrides(cfg)
+
 	globalConfig = cfg
 	return globalConfig, nil
+}
+
+// applyPasswordEnvOverrides 应用主密码环境变量覆盖。优先级（高到低）：
+//  1. 源特定变量：XSC_SECURECRT_PASSWORD / XSC_XSHELL_PASSWORD / XSC_MOBAXTERM_PASSWORD
+//  2. YAML 中已有的 password 字段
+//  3. 通用 XSC_MASTER_PASSWORD（仅当对应源仍为空时兜底）
+func applyPasswordEnvOverrides(cfg *GlobalConfig) {
+	if v := os.Getenv("XSC_SECURECRT_PASSWORD"); v != "" {
+		cfg.SecureCRT.Password = v
+	}
+	if v := os.Getenv("XSC_XSHELL_PASSWORD"); v != "" {
+		cfg.XShell.Password = v
+	}
+	if v := os.Getenv("XSC_MOBAXTERM_PASSWORD"); v != "" {
+		cfg.MobaXterm.Password = v
+	}
+	if master := os.Getenv("XSC_MASTER_PASSWORD"); master != "" {
+		if cfg.SecureCRT.Password == "" {
+			cfg.SecureCRT.Password = master
+		}
+		if cfg.XShell.Password == "" {
+			cfg.XShell.Password = master
+		}
+		if cfg.MobaXterm.Password == "" {
+			cfg.MobaXterm.Password = master
+		}
+	}
 }
 
 // SaveGlobalConfig 保存全局配置

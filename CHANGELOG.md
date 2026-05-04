@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.0] - 2026-05-05
+
+### Fixed
+- **认证**: 修复 SecureCRT/XShell/MobaXterm 主密码无法从 `~/.xsc/config.yaml` 读取的问题。
+  v1.3.0 安全加固提交将 `password` 字段标为 `yaml:"-"`（不持久化到磁盘），但
+  没有提供其他读取路径，导致用户在 YAML 里写的 `password:` 被静默丢弃，连接时报
+  `master password not set for decryption`。
+
+### Added
+- **认证**: 主密码新优先级（高到低）：源特定环境变量 `XSC_SECURECRT_PASSWORD` /
+  `XSC_XSHELL_PASSWORD` / `XSC_MOBAXTERM_PASSWORD` → `~/.xsc/config.yaml` 中的
+  `password:` 字段 → 通用 `XSC_MASTER_PASSWORD` 兜底 → TTY 交互式提示。
+- **认证**: TTY 场景下，启用了导入源但密码仍为空时，`xssh tui/connect/exec/ping/import-*`
+  和 `xftp tui/connect/ls/cat/get/put/...` 在执行前会无回显地提示输入主密码。
+- **认证**: ProxyJump 跳板机连接支持（来自 v1.3.0 后续提交合并发布）。
+- **认证**: 交互式密码输入支持（来自 v1.3.0 后续提交合并发布）。
+
+### Changed
+- **认证**: `SecureCRTConfig` / `XShellConfig` / `MobaXtermConfig` 的 `Password`
+  字段恢复 `yaml:"password,omitempty"` 标签，但通过自定义 `MarshalYAML` 保证
+  `SaveGlobalConfig` **永不写出 password 到磁盘**——读入和持久化解耦。
+- **MobaXterm 解析**: INI 文件编码自动检测（GBK 等非 UTF-8 编码）。
+
 ## [0.2.0.0] - 2026-03-27
 
 ### Added

@@ -148,6 +148,43 @@ xssh exec db-master "uptime"
 
 > 会话路径取决于原始工具中的文件夹结构。使用 `xssh list` 查看所有可用的会话路径。
 
+### 外部会话主密码
+
+SecureCRT / XShell / MobaXterm 会话使用各自工具的主密码加密。xsc 在解密前从下列来源按优先级读取主密码（高到低）：
+
+1. **源特定环境变量**：`XSC_SECURECRT_PASSWORD`、`XSC_XSHELL_PASSWORD`、`XSC_MOBAXTERM_PASSWORD`
+2. **`~/.xsc/config.yaml` 中的 `password:` 字段**
+3. **通用环境变量** `XSC_MASTER_PASSWORD`（仅当对应源仍为空时兜底，三个源共享同一个值）
+4. **TTY 交互式提示**：上述都为空且终端可交互时，xssh / xftp 在执行 `tui`、`connect`、`exec`、`ping`、`import-*` 等命令前提示输入
+
+```yaml
+# ~/.xsc/config.yaml
+securecrt:
+  enabled: true
+  session_path: "~/Documents/SecureCRT/Config/Sessions"
+  password: "your-securecrt-master"     # 可选；优先级低于 XSC_SECURECRT_PASSWORD
+xshell:
+  enabled: true
+  session_path: "~/Documents/NetSarang/Xshell/Sessions"
+mobaxterm:
+  enabled: true
+  session_path: "~/Documents/MobaXterm/MobaXterm.ini"
+```
+
+```bash
+# 推荐：通过环境变量提供主密码（不落盘）
+export XSC_SECURECRT_PASSWORD='your-securecrt-master'
+export XSC_XSHELL_PASSWORD='your-xshell-master'
+xssh exec securecrt/Production/web-01 "uptime"
+
+# 简单场景：所有源使用同一主密码
+export XSC_MASTER_PASSWORD='shared-master'
+```
+
+> 注意：`config.yaml` 中的 `password:` 字段**只读取，不写出**。`SaveGlobalConfig` 永不把内存中的主密码持久化到 YAML。文件本身建议保持 0600 权限。
+>
+> 非 TTY 场景（脚本、CI、MCP）下密码缺失时不会卡死，会立刻报错并提示用环境变量。
+
 ## MCP Server（Claude Code 集成）
 
 xsc-mcp 是一个 [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) Server，让 Claude Code 等 AI 助手能够通过 xsc 的会话配置直接访问远程服务器，执行命令和管理文件。

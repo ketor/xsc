@@ -46,7 +46,7 @@ func TestValidateFileNameEdgeCases(t *testing.T) {
 		{"-", false},            // 连字符
 		{"file-name_v2", false}, // 常见命名
 		{"a/b/c", true},         // 多级路径
-		{"...", false},           // 三个点（合法文件名）
+		{"...", false},          // 三个点（合法文件名）
 	}
 
 	for _, tt := range tests {

@@ -122,8 +122,8 @@ ssh:
 	if cfg.SecureCRT.SessionPath != "/custom/path" {
 		t.Errorf("SessionPath = %s, want /custom/path", cfg.SecureCRT.SessionPath)
 	}
-	if cfg.SecureCRT.Password != "" {
-		t.Errorf("Password should not be loaded from YAML (yaml:\"-\"), got %s", cfg.SecureCRT.Password)
+	if cfg.SecureCRT.Password != "secret123" {
+		t.Errorf("Password should be loaded from YAML, got %q", cfg.SecureCRT.Password)
 	}
 	if cfg.SSH.IsStrictHostKey() {
 		t.Error("显式设为 false 时 IsStrictHostKey 应返回 false")
@@ -219,7 +219,20 @@ func TestSaveAndLoadGlobalConfig(t *testing.T) {
 		t.Fatalf("Failed to save config: %v", err)
 	}
 
-	// Password 字段标记为 yaml:"-"，保存后不应持久化到文件
+	// Password 字段不应持久化到文件（即使内存中有值），但读取时仍可由 YAML 填充
+	// 这里通过直接读 YAML 原文验证保存不写出 password
+	configPath := filepath.Join(tmpDir, ".xsc", "config.yaml")
+	rawYAML, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read saved config: %v", err)
+	}
+	if strings.Contains(string(rawYAML), "password") {
+		t.Errorf("saved YAML should not contain 'password' field, got:\n%s", rawYAML)
+	}
+	if strings.Contains(string(rawYAML), "testpass") {
+		t.Errorf("saved YAML should not contain master password value, got:\n%s", rawYAML)
+	}
+
 	// 重置缓存强制从文件重新加载
 	globalConfig = nil
 	loadedCfg, err := LoadGlobalConfig()
@@ -234,7 +247,7 @@ func TestSaveAndLoadGlobalConfig(t *testing.T) {
 		t.Errorf("SessionPath = %s, want /test/path", loadedCfg.SecureCRT.SessionPath)
 	}
 	if loadedCfg.SecureCRT.Password != "" {
-		t.Errorf("Password should not be persisted to YAML (yaml:\"-\"), got %s", loadedCfg.SecureCRT.Password)
+		t.Errorf("Password should not be present after save+load (file does not persist it), got %q", loadedCfg.SecureCRT.Password)
 	}
 	if loadedCfg.SSH.IsStrictHostKey() {
 		t.Error("SSH.StrictHostKey should be false when explicitly set")
@@ -420,6 +433,135 @@ func TestGetKnownHostsPathFallback(t *testing.T) {
 	expected := filepath.Join(tmpDir, ".xsc", "known_hosts")
 	if path != expected {
 		t.Errorf("期望 %s，实际: %s", expected, path)
+	}
+
+	globalConfig = nil
+}
+
+// TestLoadGlobalConfig_PasswordEnvOverridesYAML 验证源特定环境变量覆盖 YAML 中的 password
+func TestLoadGlobalConfig_PasswordEnvOverridesYAML(t *testing.T) {
+	globalConfig = nil
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	configDir := filepath.Join(tmpDir, ".xsc")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	configYAML := `securecrt:
+  enabled: true
+  password: from-yaml
+xshell:
+  enabled: true
+  password: xshell-yaml
+mobaxterm:
+  enabled: true
+  password: moba-yaml
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv("XSC_SECURECRT_PASSWORD", "from-env")
+	t.Setenv("XSC_XSHELL_PASSWORD", "xshell-env")
+	t.Setenv("XSC_MOBAXTERM_PASSWORD", "moba-env")
+
+	cfg, err := LoadGlobalConfig()
+	if err != nil {
+		t.Fatalf("LoadGlobalConfig: %v", err)
+	}
+
+	if cfg.SecureCRT.Password != "from-env" {
+		t.Errorf("SecureCRT.Password = %q, want from-env", cfg.SecureCRT.Password)
+	}
+	if cfg.XShell.Password != "xshell-env" {
+		t.Errorf("XShell.Password = %q, want xshell-env", cfg.XShell.Password)
+	}
+	if cfg.MobaXterm.Password != "moba-env" {
+		t.Errorf("MobaXterm.Password = %q, want moba-env", cfg.MobaXterm.Password)
+	}
+
+	globalConfig = nil
+}
+
+// TestLoadGlobalConfig_MasterPasswordFallback 验证当源密码为空时，XSC_MASTER_PASSWORD 兜底所有源
+func TestLoadGlobalConfig_MasterPasswordFallback(t *testing.T) {
+	globalConfig = nil
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	configDir := filepath.Join(tmpDir, ".xsc")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// YAML 中只启用源，不写 password
+	configYAML := `securecrt:
+  enabled: true
+xshell:
+  enabled: true
+mobaxterm:
+  enabled: true
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv("XSC_MASTER_PASSWORD", "global-master")
+
+	cfg, err := LoadGlobalConfig()
+	if err != nil {
+		t.Fatalf("LoadGlobalConfig: %v", err)
+	}
+
+	if cfg.SecureCRT.Password != "global-master" {
+		t.Errorf("SecureCRT.Password = %q, want global-master", cfg.SecureCRT.Password)
+	}
+	if cfg.XShell.Password != "global-master" {
+		t.Errorf("XShell.Password = %q, want global-master", cfg.XShell.Password)
+	}
+	if cfg.MobaXterm.Password != "global-master" {
+		t.Errorf("MobaXterm.Password = %q, want global-master", cfg.MobaXterm.Password)
+	}
+
+	globalConfig = nil
+}
+
+// TestLoadGlobalConfig_MasterPasswordDoesNotOverrideSpecific 验证源特定值优先于 XSC_MASTER_PASSWORD
+func TestLoadGlobalConfig_MasterPasswordDoesNotOverrideSpecific(t *testing.T) {
+	globalConfig = nil
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	configDir := filepath.Join(tmpDir, ".xsc")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// SecureCRT 在 YAML 有密码、XShell 无；环境变量给一个 master + 一个源特定
+	configYAML := `securecrt:
+  enabled: true
+  password: yaml-securecrt
+xshell:
+  enabled: true
+`
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	t.Setenv("XSC_MASTER_PASSWORD", "global-master")
+	t.Setenv("XSC_XSHELL_PASSWORD", "xshell-specific")
+
+	cfg, err := LoadGlobalConfig()
+	if err != nil {
+		t.Fatalf("LoadGlobalConfig: %v", err)
+	}
+
+	// SecureCRT 的 YAML 值不应被 master 兜底覆盖
+	if cfg.SecureCRT.Password != "yaml-securecrt" {
+		t.Errorf("SecureCRT.Password = %q, want yaml-securecrt (YAML wins over master fallback)", cfg.SecureCRT.Password)
+	}
+	// XShell 的源特定环境变量优先
+	if cfg.XShell.Password != "xshell-specific" {
+		t.Errorf("XShell.Password = %q, want xshell-specific (specific env wins over master)", cfg.XShell.Password)
 	}
 
 	globalConfig = nil

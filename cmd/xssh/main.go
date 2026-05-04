@@ -40,6 +40,19 @@ func main() {
 
 	command := os.Args[1]
 
+	// 解密外部 session 前补齐主密码（TTY 场景下交互式提示）。
+	// 命令白名单：只有真正需要密码的命令才触发。
+	switch command {
+	case "tui", "connect", "exec", "ping",
+		"import-securecrt", "import-xshell", "import-mobaxterm":
+		if cfg, err := config.LoadGlobalConfig(); err == nil {
+			if perr := shared.EnsureMasterPasswords(cfg); perr != nil {
+				fmt.Fprintf(os.Stderr, "读取主密码失败: %v\n", perr)
+				os.Exit(cli.ExitConfig)
+			}
+		}
+	}
+
 	switch command {
 	case "tui":
 		// TUI 模式
@@ -388,8 +401,8 @@ func parseImportArgs() bool {
 // sessionFlags 解析 --host/--port/--user/--auth-type/--password/--key/--json 等通用 flag
 type sessionFlags struct {
 	Path, Host, User, AuthType, Password, KeyPath, ProxyJump string
-	Port                                                      int
-	JSON                                                      bool
+	Port                                                     int
+	JSON                                                     bool
 }
 
 func parseSessionFlags(args []string) sessionFlags {
