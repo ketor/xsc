@@ -135,15 +135,33 @@ func TestSessionValidateInvalidAuthType(t *testing.T) {
 	}
 }
 
-// TestSessionValidateKeyAuthMissingKeyPath 测试密钥认证缺少路径
+// TestSessionValidateKeyAuthMissingKeyPath 验证 key 认证不强制要求 key_path
+//
+// 设计说明：key_path 为空时，连接层（ssh/client.go findDefaultSSHKeys）会自动回退到
+// ~/.ssh/ 下的默认密钥。这与 OpenSSH 的 `ssh user@host` 默认行为一致，也是 SecureCRT
+// publickey 认证（不指定 Identity Filename）的常见情况。Validate 不应在此报错。
 func TestSessionValidateKeyAuthMissingKeyPath(t *testing.T) {
 	s := Session{
 		Host:     "192.168.1.1",
 		AuthType: AuthTypeKey,
 	}
-	err := s.Validate()
-	if err == nil {
-		t.Fatal("期望缺少 key_path 时返回错误")
+	if err := s.Validate(); err != nil {
+		t.Errorf("key_path 为空时不应报错（连接层回退默认密钥），实际: %v", err)
+	}
+}
+
+// TestSessionValidatePublicKeyAuthMissingKeyPathAccepted 验证 publickey 别名同样不强制
+// key_path（保护从 SecureCRT 导入的 publickey 会话）
+func TestSessionValidatePublicKeyAuthMissingKeyPathAccepted(t *testing.T) {
+	s := Session{
+		Host:     "192.168.1.1",
+		AuthType: AuthType("publickey"),
+	}
+	if err := s.Validate(); err != nil {
+		t.Errorf("publickey 缺 key_path 时不应报错（连接层回退默认密钥），实际: %v", err)
+	}
+	if s.AuthType != AuthTypeKey {
+		t.Errorf("publickey 应规范化为 key，实际: %q", s.AuthType)
 	}
 }
 
@@ -157,6 +175,30 @@ func TestSessionValidateKeyAuthNonexistentFile(t *testing.T) {
 	err := s.Validate()
 	if err == nil {
 		t.Fatal("期望密钥文件不存在时返回错误")
+	}
+}
+
+// TestSessionValidatePublicKeyAuthAccepted 验证 auth_type: publickey 被接受为 key 的别名
+// 回归保护：SecureCRT 导出 / SSH 协议都用 "publickey" 作为标准术语，
+// Validate 不应该把它判为 invalid 而连带让整个 session 显示 [invalid]。
+func TestSessionValidatePublicKeyAuthAccepted(t *testing.T) {
+	tmpDir := t.TempDir()
+	keyPath := filepath.Join(tmpDir, "test_key")
+	if err := os.WriteFile(keyPath, []byte("fake-key"), 0600); err != nil {
+		t.Fatalf("创建临时密钥文件失败: %v", err)
+	}
+
+	s := Session{
+		Host:     "192.168.1.1",
+		AuthType: AuthType("publickey"),
+		KeyPath:  keyPath,
+	}
+	if err := s.Validate(); err != nil {
+		t.Errorf("auth_type=publickey 应被接受为 key 的别名，但 Validate 返回: %v", err)
+	}
+	// 期望规范化为 "key" 以便上层一致处理
+	if s.AuthType != AuthTypeKey {
+		t.Errorf("期望 publickey 规范化为 %q，实际 %q", AuthTypeKey, s.AuthType)
 	}
 }
 

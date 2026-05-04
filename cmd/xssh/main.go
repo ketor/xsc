@@ -335,27 +335,7 @@ func convertSessions(src importSource) {
 			}
 		}
 
-		sessionData := s.SessionData
-
-		// 创建 xssh Session（使用安全类型断言）
-		host, _ := sessionData["host"].(string)
-		port, _ := sessionData["port"].(int)
-		user, _ := sessionData["user"].(string)
-		authType, _ := sessionData["auth_type"].(string)
-
-		xsshSession := &session.Session{
-			Host:     host,
-			Port:     port,
-			User:     user,
-			AuthType: session.AuthType(authType),
-		}
-
-		// 处理密码
-		if pwd, ok := sessionData["password"].(string); ok && pwd != "" {
-			xsshSession.Password = pwd
-		} else if s.Password != "" {
-			xsshSession.Password = s.Password
-		}
+		xsshSession := buildXSSHSessionFromImport(s)
 
 		// 构建目标路径（保持目录层次结构）
 		var targetPath string
@@ -599,6 +579,63 @@ func convertMobaXterm() {
 type rawImportSession struct {
 	Name, Folder, Password, EncryptedPassword string
 	SessionData                               map[string]interface{}
+}
+
+// buildXSSHSessionFromImport 从外部源（SecureCRT/XShell/MobaXterm）的导入数据构造完整的
+// xssh Session 对象。需要保留：基础字段、密码（解密后明文）、key_path、完整 AuthMethods 列表。
+//
+// 历史回归（commit ceeb45b, 2026-03）只搬了 Host/Port/User/AuthType/Password，丢掉了
+// AuthMethods 和 KeyPath，导致导入后的 session 在 TUI 里：
+//   - 多种认证方式只显示一种（无 AuthMethods）
+//   - 无法显示 publickey 路径
+//   - 在某些场景下密码也丢失
+func buildXSSHSessionFromImport(s importSession) *session.Session {
+	sessionData := s.SessionData
+
+	host, _ := sessionData["host"].(string)
+	port, _ := sessionData["port"].(int)
+	user, _ := sessionData["user"].(string)
+	authType, _ := sessionData["auth_type"].(string)
+
+	xsshSession := &session.Session{
+		Host:     host,
+		Port:     port,
+		User:     user,
+		AuthType: session.AuthType(authType),
+	}
+
+	if pwd, ok := sessionData["password"].(string); ok && pwd != "" {
+		xsshSession.Password = pwd
+	} else if s.Password != "" {
+		xsshSession.Password = s.Password
+	}
+
+	if kp, ok := sessionData["key_path"].(string); ok && kp != "" {
+		xsshSession.KeyPath = kp
+	}
+
+	// AuthMethods 多认证列表 — SecureCRT 必需，否则 TUI 只显示一种认证方式
+	if authMethods, ok := sessionData["auth_methods"]; ok {
+		if amList, ok := authMethods.([]securecrt.AuthMethod); ok {
+			for _, am := range amList {
+				method := session.AuthMethod{
+					Type:     am.Type,
+					Priority: am.Priority,
+					KeyPath:  am.KeyFile,
+				}
+				// SecureCRT.AuthMethod.Password 字段存的是加密密文（命名混淆，见
+				// securecrt/parser.go ConvertToXSSHSession）。导入产物落本地 YAML 后没有
+				// master password 可用，因此把 buildImportSessions 已解密的明文写到
+				// AuthMethod.Password，让 TUI 能正常显示。
+				if am.Type == "password" && s.Password != "" && am.Password != "" {
+					method.Password = s.Password
+				}
+				xsshSession.AuthMethods = append(xsshSession.AuthMethods, method)
+			}
+		}
+	}
+
+	return xsshSession
 }
 
 // buildImportSessions 将原始导入会话列表转换为 importSession 列表，统一处理解密逻辑

@@ -2,6 +2,36 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.1] - 2026-05-05
+
+### Fixed
+修复了 4 个 TUI 显示回归 bug。根因是 commit `ceeb45b`（2026-03-08）"fix: 9 xftp/xssh issues" 中
+`convertSessions` 重写时丢字段，以及 `Session.Validate()` 不接受 SSH 协议标准术语 `publickey`。
+
+- **TUI**: YAML session 写 `auth_type: publickey` 时，TUI 不再误显示 `[invalid]`。
+  `Session.Validate()` 现在接受 `publickey` 作为 `key` 的别名（这是 SSH 协议和 SecureCRT
+  导出器都使用的标准术语），并自动规范化为内部规范的 `key`。
+- **TUI**: `auth_type: key` 不再强制要求 `key_path`。当 `key_path` 为空时，连接层
+  （`ssh/client.go findDefaultSSHKeys`）自动回退到 `~/.ssh/` 下的默认密钥（id_ed25519/id_rsa
+  等），与 OpenSSH 的 `ssh user@host` 默认行为一致。
+- **xssh import-***: 修复导入命令丢失多种字段的问题：
+  - **AuthMethods 完整列表**：原先 SecureCRT 多种认证方式（password/publickey/keyboard-interactive/gssapi）
+    在导入后只剩一种，现在按顺序完整保留。
+  - **解密后的密码明文**：原先只在单认证场景写入顶层 `password`，多认证场景下密码丢失。
+    现在 `auth_methods` 中的 password 项也带解密后明文，TUI `:pw` 切换可正常显示。
+  - **KeyPath**：原先 publickey 认证的密钥路径没保留，现在从 sessionData 透传到 YAML。
+
+### Added
+- 5 个新单元测试覆盖回归：
+  - `pkg/session`: `TestSessionValidatePublicKeyAuthAccepted`、`TestSessionValidatePublicKeyAuthMissingKeyPathAccepted`
+  - `cmd/xssh`: `TestBuildXSSHSessionFromImport_*` 系列（AuthMethods/Password/KeyPath/单认证保留）
+  - `internal/tui`: `TestRender_PublicKeySessionNotInvalid`、`TestRender_MultiAuthMethodsAllVisible`、`TestRender_PasswordToggleShowsPlaintext`
+
+### Migration
+**已通过旧版本 `xssh import-securecrt` 导入过 SecureCRT 会话的用户，需要重新跑一次导入**
+（`xssh import-securecrt`），新版本会写入完整的 YAML 字段。旧的导入产物 YAML 仍可工作，
+但 TUI 里只能看到一种认证方式。
+
 ## [1.4.0] - 2026-05-05
 
 ### Fixed

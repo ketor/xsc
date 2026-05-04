@@ -100,24 +100,29 @@ func (s *Session) Validate() error {
 	if s.AuthType == "" {
 		s.AuthType = AuthTypeAgent
 	}
+	// "publickey" 是 SSH 协议和 SecureCRT 导出器都使用的标准术语，
+	// 规范化为内部规范的 AuthTypeKey 以保持上层处理一致。
+	if s.AuthType == "publickey" {
+		s.AuthType = AuthTypeKey
+	}
 
 	switch s.AuthType {
 	case AuthTypePassword:
 		// 密码可以为空，连接时交互式输入
 	case AuthTypeKey:
-		if s.KeyPath == "" {
-			return fmt.Errorf("key_path is required when auth_type is 'key'")
-		}
-		// 扩展 ~ 到 home 目录
-		if s.KeyPath[0] == '~' {
-			home, err := os.UserHomeDir()
-			if err == nil {
-				s.KeyPath = filepath.Join(home, s.KeyPath[1:])
+		// key_path 为空时连接层会自动回退到 ~/.ssh/ 下的默认密钥（id_ed25519/id_rsa 等），
+		// 见 ssh/client.go findDefaultSSHKeys。所以这里只在显式给了 key_path 但路径不存在
+		// 时才报错。
+		if s.KeyPath != "" {
+			if s.KeyPath[0] == '~' {
+				home, err := os.UserHomeDir()
+				if err == nil {
+					s.KeyPath = filepath.Join(home, s.KeyPath[1:])
+				}
 			}
-		}
-		// 检查私钥文件是否存在
-		if _, err := os.Stat(s.KeyPath); os.IsNotExist(err) {
-			return fmt.Errorf("key file not found: %s", s.KeyPath)
+			if _, err := os.Stat(s.KeyPath); os.IsNotExist(err) {
+				return fmt.Errorf("key file not found: %s", s.KeyPath)
+			}
 		}
 	case AuthTypeAgent:
 		// Agent 认证不需要额外配置
