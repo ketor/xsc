@@ -785,13 +785,11 @@ func (m Model) handleTopMenuMouse(msg tea.MouseMsg) (Model, tea.Cmd, bool) {
 	}
 
 	items := topMenus[m.menu.Active].Items
-	startX := shared.MenuStartX(topMenus, m.menu.Active)
-	width := 0
-	for _, item := range items {
-		width = max(width, len([]rune(item.Label))+len([]rune(item.Shortcut))+5)
-	}
-	if msg.Y >= 1 && msg.Y <= len(items) && msg.X >= startX && msg.X < startX+width {
-		m.menu.Cursor = msg.Y - 1
+	_, startX, width := m.renderDropdownMenu()
+	itemIndex := msg.Y - 2 // y=1 是弹窗上边框
+	if itemIndex >= 0 && itemIndex < len(items) &&
+		msg.X > startX && msg.X < startX+width-1 {
+		m.menu.Cursor = itemIndex
 		if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
 			item, ok := m.menu.Selected(topMenus)
 			m.menu.Close()

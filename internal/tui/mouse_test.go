@@ -522,7 +522,7 @@ func TestTopMenuMouseSearchAction(t *testing.T) {
 	}
 
 	result, _ = m.Update(tea.MouseMsg{
-		X: 16, Y: 1,
+		X: 16, Y: 2,
 		Button: tea.MouseButtonLeft, Action: tea.MouseActionPress,
 	})
 	m = result.(Model)

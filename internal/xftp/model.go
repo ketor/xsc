@@ -13,6 +13,7 @@ import (
 
 	"github.com/ketor/xsc/internal/session"
 	"github.com/ketor/xsc/internal/shared"
+	"github.com/ketor/xsc/pkg/version"
 )
 
 // Mode TUI 模式
@@ -779,13 +780,11 @@ func (m Model) handleTopMenuMouse(msg tea.MouseMsg) (Model, tea.Cmd, bool) {
 	}
 
 	items := topMenus[m.menu.Active].Items
-	startX := shared.MenuStartX(topMenus, m.menu.Active)
-	width := 0
-	for _, item := range items {
-		width = max(width, len([]rune(item.Label))+len([]rune(item.Shortcut))+5)
-	}
-	if msg.Y >= 1 && msg.Y <= len(items) && msg.X >= startX && msg.X < startX+width {
-		m.menu.Cursor = msg.Y - 1
+	_, startX, width := m.renderDropdownMenu()
+	itemIndex := msg.Y - 2 // y=1 是弹窗上边框
+	if itemIndex >= 0 && itemIndex < len(items) &&
+		msg.X > startX && msg.X < startX+width-1 {
+		m.menu.Cursor = itemIndex
 		if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
 			item, ok := m.menu.Selected(topMenus)
 			m.menu.Close()
@@ -853,7 +852,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if msg.Y == m.height-2 {
 			x := 1
 			for index, item := range m.contextMenu.items {
-				width := len([]rune(item.Label)) + len([]rune(item.Key)) + 2
+				width := lipgloss.Width(fmt.Sprintf("%s(%s)", item.Label, item.Key))
 				if msg.X >= x && msg.X < x+width {
 					m.contextMenu.cursor = index
 					if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
@@ -1102,14 +1101,19 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		panel.cursor = clickedIndex
 		panel.ensureVisible()
 
-		var items []ContextMenuItem
-		items = append(items, ContextMenuItem{Label: "复制", Key: "y", Action: "yank"})
-		if len(m.yankFiles) > 0 {
-			items = append(items, ContextMenuItem{Label: "粘贴", Key: "p", Action: "paste"})
+		selectLabel := "多选"
+		if panel.entries[clickedIndex].Selected {
+			selectLabel = "取消"
 		}
-		items = append(items, ContextMenuItem{Label: "删除", Key: "D", Action: "delete"})
-		items = append(items, ContextMenuItem{Label: "新建目录", Key: "m", Action: "mkdir"})
-		items = append(items, ContextMenuItem{Label: "重命名", Key: "r", Action: "rename"})
+		items := []ContextMenuItem{
+			{Label: selectLabel, Key: "Space", Action: "toggle-select"},
+			{Label: "标记传输", Key: "y", Action: "yank"},
+			{Label: "粘贴", Key: "p", Action: "paste"},
+			{Label: "删除", Key: "D", Action: "delete"},
+			{Label: "重命名", Key: "r", Action: "rename"},
+			{Label: "创建目录", Key: "m", Action: "mkdir"},
+			{Label: "刷新", Key: "R", Action: "refresh"},
+		}
 
 		m.contextMenu = ContextMenu{visible: true, items: items, cursor: 0}
 		m.mode = ModeContextMenu
@@ -1155,16 +1159,25 @@ func (m Model) executeContextMenuAction() (tea.Model, tea.Cmd) {
 	m.mode = ModeNormal
 	m.contextMenu.visible = false
 	switch action {
+	case "toggle-select":
+		if m.activePanel == PanelLeft {
+			m.localPanel.ToggleSelect()
+		} else if m.connected {
+			m.remotePanel.ToggleSelect()
+		}
+		return m, nil
 	case "yank":
 		return m.handleYank()
 	case "paste":
 		return m.handlePaste()
 	case "delete":
 		return m.handleDelete()
-	case "mkdir":
-		return m.handleMkdir()
 	case "rename":
 		return m.handleRename()
+	case "mkdir":
+		return m.handleMkdir()
+	case "refresh":
+		return m.handleRefresh()
 	}
 	return m, nil
 }
@@ -1181,7 +1194,7 @@ func (m Model) renderContextMenuBar() string {
 		}
 	}
 	bar := strings.Join(parts, "  ")
-	return ContextMenuBarStyle.Width(m.width).Render(bar)
+	return fitTerminalWidth(ContextMenuBarStyle, m.width).Render(bar)
 }
 
 // handleConnected 处理连接成功
@@ -1233,9 +1246,6 @@ func (m *Model) updatePanelSizes() {
 	}
 	panelWidth := m.width / 2
 	reserved := 2 // 顶部菜单栏 + 状态栏
-	if m.menu.Open {
-		reserved += len(topMenus[m.menu.Active].Items)
-	}
 	if m.transfer != nil && m.transfer.ActiveTask() != nil {
 		reserved++
 	}
@@ -1264,13 +1274,15 @@ func (m Model) View() string {
 	}
 
 	rows := []string{m.renderTopMenuBar()}
-	if m.menu.Open {
-		rows = append(rows, m.renderDropdownMenu())
-	}
 	if m.mode == ModeSelector {
-		selectorHeight := max(1, m.height-len(rows))
+		selectorHeight := max(1, m.height-1)
 		rows = append(rows, m.selector.View(m.width, selectorHeight))
-		return lipgloss.JoinVertical(lipgloss.Left, rows...)
+		view := lipgloss.JoinVertical(lipgloss.Left, rows...)
+		if m.menu.Open {
+			popup, x, width := m.renderDropdownMenu()
+			view = shared.OverlayBlock(view, popup, x, 1, width, m.width)
+		}
+		return view
 	}
 
 	m.updatePanelSizes()
@@ -1300,14 +1312,19 @@ func (m Model) View() string {
 			rows = append(rows, m.renderContextMenuBar())
 		}
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+	view := lipgloss.JoinVertical(lipgloss.Left, rows...)
+	if m.menu.Open {
+		popup, x, width := m.renderDropdownMenu()
+		view = shared.OverlayBlock(view, popup, x, 1, width, m.width)
+	}
+	return view
 }
 
 func (m Model) renderTopMenuBar() string {
+	background := lipgloss.NewStyle().Background(lipgloss.Color(colorBgAlt))
 	parts := make([]string, 0, len(topMenus))
 	for index, menu := range topMenus {
-		style := lipgloss.NewStyle().
-			Background(lipgloss.Color(colorBgAlt)).
+		style := background.Copy().
 			Foreground(lipgloss.Color(colorFg)).
 			Padding(0, 1)
 		if m.menu.Open && m.menu.Active == index {
@@ -1317,42 +1334,35 @@ func (m Model) renderTopMenuBar() string {
 		}
 		parts = append(parts, style.Render(menu.Label))
 	}
-	bar := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
-	return lipgloss.NewStyle().
-		Background(lipgloss.Color(colorBgAlt)).
-		Width(m.width).
-		Render(bar)
+	left := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+	versionText := " xftp " + version.Version + " "
+	available := max(0, m.width-lipgloss.Width(left))
+	versionText = shared.TruncateDisplayWidth(versionText, available)
+	gap := max(0, available-lipgloss.Width(versionText))
+	right := background.Copy().Foreground(lipgloss.Color(colorFgDim)).Render(versionText)
+	return shared.FitANSI(left+background.Render(strings.Repeat(" ", gap))+right, m.width, background)
 }
 
-func (m Model) renderDropdownMenu() string {
+func (m Model) renderDropdownMenu() ([]string, int, int) {
 	menu := topMenus[m.menu.Active]
-	startX := shared.MenuStartX(topMenus, m.menu.Active)
-	width := 0
-	for _, item := range menu.Items {
-		width = max(width, len([]rune(item.Label))+len([]rune(item.Shortcut))+5)
-	}
-	lines := make([]string, 0, len(menu.Items))
-	for index, item := range menu.Items {
-		padding := max(1, width-len([]rune(item.Label))-len([]rune(item.Shortcut))-2)
-		line := " " + item.Label + strings.Repeat(" ", padding) + item.Shortcut + " "
-		style := lipgloss.NewStyle().
-			Width(width).
-			Background(lipgloss.Color(colorBgPanel)).
-			Foreground(lipgloss.Color(colorFg))
-		if index == m.menu.Cursor {
-			style = style.Background(lipgloss.Color(colorYellow)).
-				Foreground(lipgloss.Color(colorBg)).
-				Bold(true)
-		}
-		lines = append(lines, strings.Repeat(" ", startX)+style.Render(line))
-	}
-	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+	border := lipgloss.NewStyle().Foreground(lipgloss.Color(colorFgDark))
+	item := lipgloss.NewStyle().
+		Background(lipgloss.Color(colorBgPanel)).
+		Foreground(lipgloss.Color(colorFg))
+	selected := item.Copy().
+		Background(lipgloss.Color(colorYellow)).
+		Foreground(lipgloss.Color(colorBg)).
+		Bold(true)
+	disabled := item.Copy().Foreground(lipgloss.Color(colorFgDark))
+	lines, width := shared.RenderMenuPopup(menu, m.menu.Cursor, border, item, selected, disabled)
+	x := min(shared.MenuStartX(topMenus, m.menu.Active), max(0, m.width-width))
+	return lines, x, width
 }
 
 // renderSearchBar 渲染搜索栏
 func (m Model) renderSearchBar() string {
 	searchWithHint := m.searchInput.View() + "  (Esc:取消 Enter:确认)"
-	return SearchStyle.Width(m.width).Render(searchWithHint)
+	return fitTerminalWidth(SearchStyle, m.width).Render(searchWithHint)
 }
 
 // renderConfirmBar 渲染确认对话框
@@ -1366,7 +1376,7 @@ func (m Model) renderConfirmBar() string {
 	yesBtn := ConfirmYesBtnStyle.Render("Yes(y)")
 	noBtn := ConfirmNoBtnStyle.Render("No(n)")
 	bar := msg + "  " + yesBtn + "  " + noBtn
-	return ConfirmMsgStyle.Width(m.width).Padding(0, 1).Render(bar)
+	return fitTerminalWidth(ConfirmMsgStyle.Padding(0, 1), m.width).Render(bar)
 }
 
 // renderOverwriteConfirmBar 渲染覆盖确认对话框
@@ -1375,19 +1385,19 @@ func (m Model) renderOverwriteConfirmBar() string {
 	yesBtn := ConfirmYesBtnStyle.Render("Yes(y)")
 	noBtn := ConfirmNoBtnStyle.Render("No(n)")
 	bar := msg + "  " + yesBtn + "  " + noBtn
-	return ConfirmMsgStyle.Width(m.width).Padding(0, 1).Render(bar)
+	return fitTerminalWidth(ConfirmMsgStyle.Padding(0, 1), m.width).Render(bar)
 }
 
 // renderInputBar 渲染输入对话框
 func (m Model) renderInputBar() string {
 	inputWithHint := m.opInput.View() + "  (Esc:取消 Enter:确认)"
-	return SearchStyle.Width(m.width).Render(inputWithHint)
+	return fitTerminalWidth(SearchStyle, m.width).Render(inputWithHint)
 }
 
 // renderCmdBar 渲染命令栏
 func (m Model) renderCmdBar() string {
 	cmdWithHint := m.cmdInput.View() + "  " + CmdHintStyle.Render("(q:退出 reconnect:重连)")
-	return SearchStyle.Width(m.width).Render(cmdWithHint)
+	return fitTerminalWidth(SearchStyle, m.width).Render(cmdWithHint)
 }
 
 // renderPanel 渲染单个面板（含边框）
@@ -1402,14 +1412,18 @@ func (m Model) renderPanel(side PanelSide) string {
 	content := panel.View()
 
 	// 根据激活状态选择边框样式
-	var style lipgloss.Style
+	style := InactivePanelStyle
 	if side == m.activePanel {
 		style = ActivePanelStyle
-	} else {
-		style = InactivePanelStyle
 	}
-
-	return style.Width(panel.width - 2).Height(panel.height).Render(content)
+	contentWidth := max(0, panel.width-style.GetHorizontalFrameSize())
+	totalHeight := panel.height + style.GetVerticalFrameSize()
+	return style.
+		Width(contentWidth).
+		Height(panel.height).
+		MaxWidth(panel.width).
+		MaxHeight(totalHeight).
+		Render(content)
 }
 
 // renderStatusBar 渲染状态栏
@@ -1441,29 +1455,13 @@ func (m Model) renderStatusBar() string {
 
 	// 右侧：状态信息 + 帮助提示
 	right := fmt.Sprintf(" %s | ?:Help :q:Quit ", m.statusMsg)
-
-	// 可用内容宽度（减去 StatusBarStyle 的左右 Padding 各 1 字符）
-	contentWidth := m.width - 2
-	// 如果左右合计超出宽度，截断左侧路径部分
-	gap := contentWidth - lipgloss.Width(left) - lipgloss.Width(right)
-	if gap < 0 {
-		maxLeft := contentWidth - lipgloss.Width(right)
-		if maxLeft < 0 {
-			maxLeft = 0
-		}
-		if len(left) > maxLeft {
-			if maxLeft > 3 {
-				left = left[:maxLeft-3] + "..."
-			} else {
-				left = left[:maxLeft]
-			}
-		}
-		gap = 0
-	}
-
+	contentWidth := max(0, m.width-StatusBarStyle.GetHorizontalFrameSize())
+	right = shared.TruncateDisplayWidth(right, contentWidth)
+	maxLeft := max(0, contentWidth-lipgloss.Width(right))
+	left = shared.TruncateDisplayWidth(left, maxLeft)
+	gap := max(0, contentWidth-lipgloss.Width(left)-lipgloss.Width(right))
 	bar := left + strings.Repeat(" ", gap) + right
-
-	return StatusBarStyle.Width(m.width).Render(bar)
+	return fitTerminalWidth(StatusBarStyle, m.width).Render(bar)
 }
 
 // renderHelp 渲染帮助视图

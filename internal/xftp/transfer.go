@@ -11,6 +11,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ketor/xsc/internal/shared"
 	"github.com/pkg/sftp"
 )
 
@@ -403,7 +404,8 @@ func (m Model) renderTransferBar() string {
 	pct := fmt.Sprintf("%3d%%", int(task.Progress*100))
 
 	line := fmt.Sprintf("%s%s %s [%s] %s", arrow, name, pct, bar, sizeInfo)
-	return StatusBarStyle.Width(m.width).Render(line)
+	line = shared.TruncateDisplayWidth(line, max(0, m.width-StatusBarStyle.GetHorizontalFrameSize()))
+	return fitTerminalWidth(StatusBarStyle, m.width).Render(line)
 }
 
 // copyWithProgress 带进度回调的复制

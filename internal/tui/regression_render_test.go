@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/ketor/xsc/internal/session"
 )
 
@@ -102,5 +103,58 @@ func TestRender_PasswordToggleShowsPlaintext(t *testing.T) {
 	detail2 := m.renderDetail(80, 30)
 	if !strings.Contains(detail2, "MySecretP@ss") {
 		t.Errorf("password not shown when showPassword=true; got:\n%s", detail2)
+	}
+}
+
+func TestViewNeverExceedsTerminalDimensions(t *testing.T) {
+	model := initialModel()
+	model.width = 60
+	model.height = 15
+	model.loadWarning = strings.Repeat("XShell source directory is unavailable ", 10)
+	model.menu.OpenMenu(0, topMenus)
+
+	view := model.View()
+	if got := lipgloss.Height(view); got > model.height {
+		t.Fatalf("view height = %d, terminal height = %d", got, model.height)
+	}
+	if got := lipgloss.Width(view); got > model.width {
+		t.Fatalf("view width = %d, terminal width = %d", got, model.width)
+	}
+}
+
+func TestTopMenuDropdownOverlaysWithoutReflow(t *testing.T) {
+	model := initialModel()
+	model.width = 80
+	model.height = 20
+
+	closed := model.View()
+	model.menu.OpenMenu(0, topMenus)
+	opened := model.View()
+	if lipgloss.Height(opened) != lipgloss.Height(closed) {
+		t.Fatalf("menu changed height from %d to %d", lipgloss.Height(closed), lipgloss.Height(opened))
+	}
+	closedLines := strings.Split(closed, "\n")
+	openedLines := strings.Split(opened, "\n")
+	uncoveredLine := 1 + len(topMenus[model.menu.Active].Items) + 2 // 上下边框
+	if !strings.Contains(openedLines[1], "┌") || !strings.Contains(openedLines[1], "┐") {
+		t.Fatalf("floating menu top border missing: %q", openedLines[1])
+	}
+	if !strings.Contains(opened, "└") || !strings.Contains(opened, "┘") {
+		t.Fatal("floating menu bottom border missing")
+	}
+	if closedLines[uncoveredLine] != openedLines[uncoveredLine] {
+		t.Fatalf("content below floating menu moved or changed")
+	}
+}
+
+func TestTopMenuBarShowsVersion(t *testing.T) {
+	model := initialModel()
+	model.width = 80
+	line := model.renderTopMenuBar()
+	if !strings.Contains(line, "xssh dev") {
+		t.Fatalf("xssh version missing from menu bar: %q", line)
+	}
+	if lipgloss.Width(line) != model.width {
+		t.Fatalf("menu bar width = %d, want %d", lipgloss.Width(line), model.width)
 	}
 }

@@ -569,11 +569,52 @@ func TestXftpContextMenuItems(t *testing.T) {
 		actions[item.Action] = true
 	}
 
-	expected := []string{"yank", "delete", "mkdir", "rename"}
+	expected := []string{"toggle-select", "yank", "paste", "delete", "rename", "mkdir", "refresh"}
 	for _, action := range expected {
 		if !actions[action] {
 			t.Errorf("上下文菜单应包含 %q 操作", action)
 		}
+	}
+}
+
+func TestXftpContextMenuMouseToggleSelect(t *testing.T) {
+	m := newMouseTestXftpModel()
+	rightClick := tea.MouseMsg{
+		X: 5, Y: panelHeaderLines + 2,
+		Button: tea.MouseButtonRight, Action: tea.MouseActionPress,
+	}
+	result, _ := m.Update(rightClick)
+	m = result.(Model)
+
+	clickMenuItem := tea.MouseMsg{
+		X: 2, Y: m.height - 1,
+		Button: tea.MouseButtonLeft, Action: tea.MouseActionPress,
+	}
+	result, _ = m.Update(clickMenuItem)
+	m = result.(Model)
+	if !m.localPanel.entries[1].Selected {
+		t.Fatal("点击右键菜单“多选”应切换当前文件选择状态")
+	}
+	if m.mode != ModeNormal || m.contextMenu.visible {
+		t.Fatal("执行右键菜单操作后应关闭菜单")
+	}
+}
+
+func TestXftpContextMenuRefreshAction(t *testing.T) {
+	m := newMouseTestXftpModel()
+	m.mode = ModeContextMenu
+	m.contextMenu = ContextMenu{
+		visible: true,
+		items:   []ContextMenuItem{{Label: "刷新", Key: "R", Action: "refresh"}},
+		cursor:  0,
+	}
+	result, cmd := m.executeContextMenuAction()
+	updated := result.(Model)
+	if cmd == nil {
+		t.Fatal("刷新右键菜单项应返回目录加载命令")
+	}
+	if updated.statusMsg != "正在刷新..." {
+		t.Fatalf("刷新状态 = %q", updated.statusMsg)
 	}
 }
 
@@ -856,7 +897,7 @@ func TestXftpTopMenuMouseSearchAction(t *testing.T) {
 	}
 
 	result, _ = m.Update(tea.MouseMsg{
-		X: 13, Y: 2,
+		X: 13, Y: 3,
 		Button: tea.MouseButtonLeft, Action: tea.MouseActionPress,
 	})
 	m = result.(Model)

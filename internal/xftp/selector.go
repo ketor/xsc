@@ -610,7 +610,7 @@ func (s Selector) View(width, height int) string {
 
 	// 搜索模式显示搜索栏
 	if s.searching {
-		searchBar := SearchStyle.Width(width).Render(s.searchInput.View() + "  (Esc:取消 Enter:确认 C-u:清空 C-c:保留过滤)")
+		searchBar := fitTerminalWidth(SearchStyle, width).Render(s.searchInput.View() + "  (Esc:取消 Enter:确认 C-u:清空 C-c:保留过滤)")
 		return lipgloss.JoinVertical(lipgloss.Left, content, statusBar, searchBar)
 	}
 
@@ -636,8 +636,8 @@ func (s Selector) View(width, height int) string {
 
 // renderTreePanel 渲染左侧树面板（带边框）
 func (s Selector) renderTreePanel(width, height int) string {
-	innerWidth := width - 2 // 减去边框
-	innerHeight := height - 2
+	innerWidth := max(1, width-selectorTreeStyle.GetHorizontalFrameSize())
+	innerHeight := max(1, height-selectorTreeStyle.GetVerticalFrameSize())
 
 	if len(s.flatNodes) == 0 {
 		var msg string
@@ -651,6 +651,7 @@ func (s Selector) renderTreePanel(width, height int) string {
 			Render(msg)
 		return selectorTreeStyle.
 			Width(innerWidth).Height(innerHeight).
+			MaxWidth(width).MaxHeight(height).
 			Render(content)
 	}
 
@@ -692,18 +693,20 @@ func (s Selector) renderTreePanel(width, height int) string {
 
 	return selectorTreeStyle.
 		Width(innerWidth).Height(innerHeight).
+		MaxWidth(width).MaxHeight(height).
 		Render(treeContent)
 }
 
 // renderDetailPanel 渲染右侧详情面板
 func (s Selector) renderDetailPanel(width, height int) string {
-	innerWidth := width - 2
-	innerHeight := height - 2
+	innerWidth := max(1, width-selectorDetailStyle.GetHorizontalFrameSize())
+	innerHeight := max(1, height-selectorDetailStyle.GetVerticalFrameSize())
 
 	node := s.currentNode()
 	if node == nil {
 		return selectorDetailStyle.
 			Width(innerWidth).Height(innerHeight).
+			MaxWidth(width).MaxHeight(height).
 			Render(lipgloss.NewStyle().
 				Foreground(lipgloss.Color(colorFgDim)).
 				Render("未选择会话"))
@@ -796,6 +799,7 @@ func (s Selector) renderDetailPanel(width, height int) string {
 
 	return selectorDetailStyle.
 		Width(innerWidth).Height(innerHeight).
+		MaxWidth(width).MaxHeight(height).
 		Render(content.String())
 }
 
@@ -821,13 +825,13 @@ func (s Selector) renderSelectorStatusBar(width int) string {
 	// 右侧帮助
 	right := " Enter:选择 /:搜索 q:退出 "
 
-	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
-	if gap < 0 {
-		gap = 0
-	}
-
+	contentWidth := max(0, width-StatusBarStyle.GetHorizontalFrameSize())
+	right = shared.TruncateDisplayWidth(right, contentWidth)
+	maxLeft := max(0, contentWidth-lipgloss.Width(right))
+	left = shared.TruncateDisplayWidth(left, maxLeft)
+	gap := max(0, contentWidth-lipgloss.Width(left)-lipgloss.Width(right))
 	bar := left + strings.Repeat(" ", gap) + right
-	return StatusBarStyle.Width(width).Render(bar)
+	return fitTerminalWidth(StatusBarStyle, width).Render(bar)
 }
 
 // renderNode 渲染单个树节点
@@ -1102,7 +1106,7 @@ func (s Selector) renderCommandBar(width int) string {
 	}
 	bar += "  " + CmdHintStyle.Render("(Tab:补全 Enter:执行 Esc:取消)")
 
-	return SearchStyle.Width(width).Render(bar)
+	return fitTerminalWidth(SearchStyle, width).Render(bar)
 }
 
 // renderHelp 渲染帮助视图

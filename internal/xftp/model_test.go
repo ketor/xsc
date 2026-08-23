@@ -3,9 +3,11 @@ package xftp
 import (
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/ketor/xsc/internal/session"
 )
 
@@ -1160,5 +1162,130 @@ func TestDirLoadErrMsg(t *testing.T) {
 	}
 	if msg.Err == nil {
 		t.Error("Err 不应为 nil")
+	}
+}
+
+func TestSelectorViewNeverExceedsTerminalHeight(t *testing.T) {
+	model := NewModel(nil)
+	model.width = 80
+	model.height = 20
+	model.selector.loading = false
+	model.selector.warningMessage = strings.Repeat("XShell source directory is unavailable ", 10)
+	model.menu.OpenMenu(0, topMenus)
+
+	view := model.View()
+	if got := lipgloss.Height(view); got > model.height {
+		t.Fatalf("selector view height = %d, terminal height = %d", got, model.height)
+	}
+	if got := lipgloss.Width(view); got > model.width {
+		t.Fatalf("selector view width = %d, terminal width = %d", got, model.width)
+	}
+}
+
+func TestFileManagerViewNeverExceedsTerminalHeight(t *testing.T) {
+	model := newMouseTestXftpModel()
+	model.width = 60
+	model.height = 15
+	model.mode = ModeSearch
+	model.statusMsg = strings.Repeat("long status ", 20)
+	model.menu.OpenMenu(1, topMenus)
+
+	view := model.View()
+	if got := lipgloss.Height(view); got > model.height {
+		t.Fatalf("file manager view height = %d, terminal height = %d", got, model.height)
+	}
+	if got := lipgloss.Width(view); got > model.width {
+		t.Fatalf("file manager view width = %d, terminal width = %d", got, model.width)
+	}
+}
+
+func TestSessionSelectionTransitionKeepsTopUIVisible(t *testing.T) {
+	model := NewModel(nil)
+	model.width = 80
+	model.height = 20
+	selected, _ := model.handleSessionSelected(&session.Session{
+		Host: "127.0.0.1", Port: 22, User: "root", AuthType: session.AuthTypeAgent, Valid: true,
+	})
+	updated := selected.(Model)
+	updated.localPanel.cwd = "/" + strings.Repeat("很长的本地目录/", 12)
+	updated.remotePanel.cwd = "/" + strings.Repeat("很长的远程目录/", 12)
+	longEntry := FileEntry{Info: FileInfo{Name: strings.Repeat("超长文件名", 20) + ".log"}}
+	updated.localPanel.entries = []FileEntry{longEntry}
+	updated.remotePanel.entries = []FileEntry{longEntry}
+	updated.connected = true
+
+	view := updated.View()
+	if got := lipgloss.Height(view); got > updated.height {
+		t.Fatalf("selected-session view height = %d, terminal height = %d", got, updated.height)
+	}
+	if got := lipgloss.Width(view); got > updated.width {
+		t.Fatalf("selected-session view width = %d, terminal width = %d", got, updated.width)
+	}
+	lines := strings.Split(view, "\n")
+	if len(lines) < 4 {
+		t.Fatalf("selected-session view has only %d lines", len(lines))
+	}
+	if !strings.Contains(lines[0], "File") {
+		t.Fatalf("top menu is not visible after session selection: %q", lines[0])
+	}
+	if !strings.Contains(lines[1], "╭") || !strings.Contains(lines[1], "╮") {
+		t.Fatalf("panel top borders are not visible: %q", lines[1])
+	}
+	if !strings.Contains(lines[2], "Local:") || !strings.Contains(lines[2], "Remote:") {
+		t.Fatalf("panel titles are not visible: %q", lines[2])
+	}
+	if !strings.Contains(lines[3], "Name") {
+		t.Fatalf("panel headers are not visible: %q", lines[3])
+	}
+}
+
+func TestTopMenuDropdownOverlaysWithoutReflow(t *testing.T) {
+	model := newMouseTestXftpModel()
+	model.width = 80
+	model.height = 20
+
+	closed := model.View()
+	model.menu.OpenMenu(1, topMenus)
+	opened := model.View()
+	if lipgloss.Height(opened) != lipgloss.Height(closed) {
+		t.Fatalf("menu changed height from %d to %d", lipgloss.Height(closed), lipgloss.Height(opened))
+	}
+	closedLines := strings.Split(closed, "\n")
+	openedLines := strings.Split(opened, "\n")
+	uncoveredLine := 1 + len(topMenus[model.menu.Active].Items) + 2 // 上下边框
+	if !strings.Contains(openedLines[1], "┌") || !strings.Contains(openedLines[1], "┐") {
+		t.Fatalf("floating menu top border missing: %q", openedLines[1])
+	}
+	if !strings.Contains(opened, "└") || !strings.Contains(opened, "┘") {
+		t.Fatal("floating menu bottom border missing")
+	}
+	if closedLines[uncoveredLine] != openedLines[uncoveredLine] {
+		t.Fatalf("content below floating menu moved or changed")
+	}
+}
+
+func TestSelectorMenuDropdownOverlaysWithoutReflow(t *testing.T) {
+	model := NewModel(nil)
+	model.width = 80
+	model.height = 20
+	model.selector.loading = false
+
+	closed := model.View()
+	model.menu.OpenMenu(0, topMenus)
+	opened := model.View()
+	if lipgloss.Height(opened) != lipgloss.Height(closed) {
+		t.Fatalf("selector menu changed height from %d to %d", lipgloss.Height(closed), lipgloss.Height(opened))
+	}
+}
+
+func TestTopMenuBarShowsVersion(t *testing.T) {
+	model := newMouseTestXftpModel()
+	model.width = 80
+	line := model.renderTopMenuBar()
+	if !strings.Contains(line, "xftp dev") {
+		t.Fatalf("xftp version missing from menu bar: %q", line)
+	}
+	if lipgloss.Width(line) != model.width {
+		t.Fatalf("menu bar width = %d, want %d", lipgloss.Width(line), model.width)
 	}
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/ketor/xsc/internal/shared"
 	internalssh "github.com/ketor/xsc/internal/ssh"
 	"github.com/ketor/xsc/internal/xshell"
+	"github.com/ketor/xsc/pkg/version"
 )
 
 // View 渲染界面。
@@ -47,11 +48,7 @@ func (m Model) View() string {
 		auxiliary = m.renderContextMenuBar()
 	}
 
-	dropdownHeight := 0
-	if m.menu.Open {
-		dropdownHeight = len(topMenus[m.menu.Active].Items)
-	}
-	reservedRows := 2 + dropdownHeight // 顶部菜单 + 状态栏
+	reservedRows := 2 // 顶部菜单 + 状态栏；下拉菜单以覆盖层渲染
 	if auxiliary != "" {
 		reservedRows++
 	}
@@ -63,22 +60,23 @@ func (m Model) View() string {
 	detailView := m.renderDetail(detailWidth, contentHeight)
 	content := lipgloss.JoinHorizontal(lipgloss.Top, treeView, detailView)
 
-	rows := []string{m.renderTopMenuBar()}
-	if m.menu.Open {
-		rows = append(rows, m.renderDropdownMenu())
-	}
-	rows = append(rows, content, m.renderStatusBar(visibleNodes))
+	rows := []string{m.renderTopMenuBar(), content, m.renderStatusBar(visibleNodes)}
 	if auxiliary != "" {
 		rows = append(rows, auxiliary)
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+	view := lipgloss.JoinVertical(lipgloss.Left, rows...)
+	if m.menu.Open {
+		popup, x, width := m.renderDropdownMenu()
+		view = shared.OverlayBlock(view, popup, x, 1, width, m.width)
+	}
+	return view
 }
 
 func (m Model) renderTopMenuBar() string {
+	background := lipgloss.NewStyle().Background(lipgloss.Color("#3c3836"))
 	parts := make([]string, 0, len(topMenus))
 	for index, menu := range topMenus {
-		style := lipgloss.NewStyle().
-			Background(lipgloss.Color("#3c3836")).
+		style := background.Copy().
 			Foreground(lipgloss.Color("#ebdbb2")).
 			Padding(0, 1)
 		if m.menu.Open && m.menu.Active == index {
@@ -88,37 +86,29 @@ func (m Model) renderTopMenuBar() string {
 		}
 		parts = append(parts, style.Render(menu.Label))
 	}
-	bar := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
-	return lipgloss.NewStyle().
-		Background(lipgloss.Color("#3c3836")).
-		Width(m.width).
-		Render(bar)
+	left := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+	versionText := " xssh " + version.Version + " "
+	available := max(0, m.width-lipgloss.Width(left))
+	versionText = shared.TruncateDisplayWidth(versionText, available)
+	gap := max(0, available-lipgloss.Width(versionText))
+	right := background.Copy().Foreground(lipgloss.Color("#a89984")).Render(versionText)
+	return shared.FitANSI(left+background.Render(strings.Repeat(" ", gap))+right, m.width, background)
 }
 
-func (m Model) renderDropdownMenu() string {
+func (m Model) renderDropdownMenu() ([]string, int, int) {
 	menu := topMenus[m.menu.Active]
-	startX := shared.MenuStartX(topMenus, m.menu.Active)
-	width := 0
-	for _, item := range menu.Items {
-		width = max(width, len([]rune(item.Label))+len([]rune(item.Shortcut))+5)
-	}
-	lines := make([]string, 0, len(menu.Items))
-	for index, item := range menu.Items {
-		label := item.Label
-		padding := max(1, width-len([]rune(item.Label))-len([]rune(item.Shortcut))-2)
-		line := " " + label + strings.Repeat(" ", padding) + item.Shortcut + " "
-		style := lipgloss.NewStyle().
-			Width(width).
-			Background(lipgloss.Color("#504945")).
-			Foreground(lipgloss.Color("#ebdbb2"))
-		if index == m.menu.Cursor {
-			style = style.Background(lipgloss.Color("#fabd2f")).
-				Foreground(lipgloss.Color("#282828")).
-				Bold(true)
-		}
-		lines = append(lines, strings.Repeat(" ", startX)+style.Render(line))
-	}
-	return lipgloss.JoinVertical(lipgloss.Left, lines...)
+	border := lipgloss.NewStyle().Foreground(lipgloss.Color("#665c54"))
+	item := lipgloss.NewStyle().
+		Background(lipgloss.Color("#504945")).
+		Foreground(lipgloss.Color("#ebdbb2"))
+	selected := item.Copy().
+		Background(lipgloss.Color("#fabd2f")).
+		Foreground(lipgloss.Color("#282828")).
+		Bold(true)
+	disabled := item.Copy().Foreground(lipgloss.Color("#665c54"))
+	lines, width := shared.RenderMenuPopup(menu, m.menu.Cursor, border, item, selected, disabled)
+	x := min(shared.MenuStartX(topMenus, m.menu.Active), max(0, m.width-width))
+	return lines, x, width
 }
 
 // computeTreeOffset 计算树形视图的滚动偏移量
@@ -139,14 +129,19 @@ func computeTreeOffset(cursor, totalNodes, viewHeight int) int {
 
 // renderTree 渲染树形视图
 func (m Model) renderTree(width, height int, visibleNodes []*session.SessionNode) string {
+	contentWidth := max(1, width-treeStyle.GetHorizontalFrameSize())
 	if m.tree == nil {
-		return treeStyle.Width(width).Height(height).Render("Loading sessions...")
+		return treeStyle.Width(contentWidth).Height(height).
+			MaxWidth(width).MaxHeight(height).
+			Render("Loading sessions...")
 	}
 
 	totalNodes := len(visibleNodes)
 
 	if totalNodes == 0 {
-		return treeStyle.Width(width).Height(height).Render("No sessions found")
+		return treeStyle.Width(contentWidth).Height(height).
+			MaxWidth(width).MaxHeight(height).
+			Render("No sessions found")
 	}
 
 	// 计算滚动的起始位置，确保光标在可视区域内
@@ -178,7 +173,9 @@ func (m Model) renderTree(width, height int, visibleNodes []*session.SessionNode
 	}
 
 	content := strings.Join(lines, "\n")
-	return treeStyle.Width(width).Height(height).Render(content)
+	return treeStyle.Width(contentWidth).Height(height).
+		MaxWidth(width).MaxHeight(height).
+		Render(content)
 }
 
 // renderNode 渲染单个节点
@@ -244,25 +241,28 @@ func (m Model) getIndent(node *session.SessionNode) string {
 func (m Model) renderDetail(width, height int) string {
 	selected := m.getSelectedNode()
 	if selected == nil {
-		return detailBoxStyle.
-			Width(width - 4).
-			Height(height - 2).
+		contentWidth := max(1, width-detailBoxStyle.GetHorizontalFrameSize())
+		contentHeight := max(1, height-detailBoxStyle.GetVerticalFrameSize())
+		return detailBoxStyle.Width(contentWidth).Height(contentHeight).
+			MaxWidth(width).MaxHeight(height).
 			Render("No session selected")
 	}
 
 	if selected.IsDir {
 		content := fmt.Sprintf("Folder: %s\n\nContains %d items",
 			selected.Name, len(selected.Children))
-		return detailBoxStyle.
-			Width(width - 4).
-			Height(height - 2).
+		contentWidth := max(1, width-detailBoxStyle.GetHorizontalFrameSize())
+		contentHeight := max(1, height-detailBoxStyle.GetVerticalFrameSize())
+		return detailBoxStyle.Width(contentWidth).Height(contentHeight).
+			MaxWidth(width).MaxHeight(height).
 			Render(content)
 	}
 
 	if selected.Session == nil {
-		return detailBoxStyle.
-			Width(width - 4).
-			Height(height - 2).
+		contentWidth := max(1, width-detailBoxStyle.GetHorizontalFrameSize())
+		contentHeight := max(1, height-detailBoxStyle.GetVerticalFrameSize())
+		return detailBoxStyle.Width(contentWidth).Height(contentHeight).
+			MaxWidth(width).MaxHeight(height).
 			Render("No session data")
 	}
 
@@ -434,9 +434,10 @@ func (m Model) renderDetail(width, height int) string {
 	}
 
 	// 应用边框样式
-	return detailBoxStyle.
-		Width(width - 4).   // 减去边框和padding的宽度
-		Height(height - 2). // 减去边框的高度
+	contentWidth := max(1, width-detailBoxStyle.GetHorizontalFrameSize())
+	contentHeight := max(1, height-detailBoxStyle.GetVerticalFrameSize())
+	return detailBoxStyle.Width(contentWidth).Height(contentHeight).
+		MaxWidth(width).MaxHeight(height).
 		Render(content.String())
 }
 
@@ -503,15 +504,16 @@ func (m Model) renderStatusBar(visibleNodes []*session.SessionNode) string {
 		status.WriteString("Warning: " + m.loadWarning + " | ")
 	}
 	status.WriteString("Press ? for help, :q or Ctrl+c to quit")
-
-	return statusBarStyle.Width(m.width).Render(status.String())
+	contentWidth := max(0, m.width-statusBarStyle.GetHorizontalFrameSize())
+	line := shared.TruncateDisplayWidth(status.String(), contentWidth)
+	return fitTerminalWidth(statusBarStyle, m.width).Render(line)
 }
 
 // renderSearchBar 渲染搜索栏
 func (m Model) renderSearchBar() string {
 	// 添加退出提示到搜索栏
 	searchWithHint := m.searchInput.View() + "  (Esc:clear Enter:confirm)"
-	return searchStyle.Width(m.width).Render(searchWithHint)
+	return fitTerminalWidth(searchStyle, m.width).Render(searchWithHint)
 }
 
 // renderLineNumBar 渲染行号跳转栏（带命令补全提示）
@@ -535,21 +537,21 @@ func (m Model) renderLineNumBar() string {
 	}
 	bar += "  " + cmdHintStyle.Render("(Tab:补全 Enter:执行 Esc:取消)")
 
-	return searchStyle.Width(m.width).Render(bar)
+	return fitTerminalWidth(searchStyle, m.width).Render(bar)
 }
 
 // renderNewSessionBar 渲染新建会话文件名输入栏
 func (m Model) renderNewSessionBar() string {
 	hint := cmdHintStyle.Render("(Enter:确认 Esc:取消)")
 	bar := m.newSessionInput.View() + "  " + hint
-	return searchStyle.Width(m.width).Render(bar)
+	return fitTerminalWidth(searchStyle, m.width).Render(bar)
 }
 
 // renderRenameBar 渲染重命名会话文件名输入栏
 func (m Model) renderRenameBar() string {
 	hint := cmdHintStyle.Render("(Enter:确认 Esc:取消)")
 	bar := m.renameInput.View() + "  " + hint
-	return searchStyle.Width(m.width).Render(bar)
+	return fitTerminalWidth(searchStyle, m.width).Render(bar)
 }
 
 // renderDeleteConfirmBar 渲染删除确认栏
@@ -560,7 +562,7 @@ func (m Model) renderDeleteConfirmBar() string {
 
 	warning := warningStyle.Render("⚠️  Warning: This action cannot be undone!")
 	bar := warning + "  " + m.deleteConfirmInput.View()
-	return searchStyle.Width(m.width).Render(bar)
+	return fitTerminalWidth(searchStyle, m.width).Render(bar)
 }
 
 // renderHelp 渲染自定义帮助视图
@@ -672,4 +674,9 @@ func (m Model) renderContextMenuBar() string {
 		Background(lipgloss.Color("#3c3836")).
 		Width(m.width).
 		Render(bar)
+}
+
+func fitTerminalWidth(style lipgloss.Style, width int) lipgloss.Style {
+	contentWidth := max(0, width-style.GetHorizontalFrameSize())
+	return style.Width(contentWidth).MaxWidth(contentWidth).MaxHeight(1)
 }

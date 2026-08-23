@@ -287,3 +287,8 @@ var (
 				Foreground(lipgloss.Color(colorBg)).
 				Bold(true)
 )
+
+func fitTerminalWidth(style lipgloss.Style, width int) lipgloss.Style {
+	contentWidth := max(0, width-style.GetHorizontalFrameSize())
+	return style.Width(contentWidth).MaxWidth(contentWidth).MaxHeight(1)
+}

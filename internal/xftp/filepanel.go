@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/ketor/xsc/internal/shared"
 )
 
 // panelHeaderLines 是文件面板中文件列表上方的行数（屏幕坐标偏移）
@@ -352,19 +353,16 @@ func (p *FilePanel) SetSize(w, h int) {
 
 // View 渲染文件面板
 func (p FilePanel) View() string {
-	contentWidth := p.width - 2 // 减去边框
+	contentWidth := max(1, p.width-ActivePanelStyle.GetHorizontalFrameSize())
 	viewH := p.viewHeight()
 
-	// 面板标题：路径
-	var titleStyle lipgloss.Style
 	var title string
 	if p.side == PanelLeft {
-		title = "Local: " + p.shortenPath(p.cwd, contentWidth-10)
+		title = "Local: " + shared.TruncateDisplayWidthTail(p.cwd, max(1, contentWidth-9))
 	} else {
-		title = "Remote: " + p.shortenPath(p.cwd, contentWidth-11)
+		title = "Remote: " + shared.TruncateDisplayWidthTail(p.cwd, max(1, contentWidth-10))
 	}
-	titleStyle = PanelTitleStyle
-	titleLine := titleStyle.Width(contentWidth).Render(title)
+	titleLine := fitTerminalWidth(PanelTitleStyle, contentWidth).Render(title)
 
 	// 表头
 	header := p.renderHeader(contentWidth)
@@ -466,7 +464,8 @@ func (p FilePanel) renderHeader(width int) string {
 		line += fmt.Sprintf(" %-6s", "Modify")
 	}
 
-	return headerStyle.Width(width).Render(line)
+	line = shared.TruncateDisplayWidth(line, width)
+	return headerStyle.Width(width).MaxWidth(width).MaxHeight(1).Render(line)
 }
 
 // renderEntry 渲染单个文件条目
@@ -521,26 +520,25 @@ func (p FilePanel) renderEntry(idx int, width int) string {
 		line += fmt.Sprintf(" %s", formatTime(entry.Info.ModTime))
 	}
 
-	// 应用样式
+	line = shared.TruncateDisplayWidth(line, width)
 	var style lipgloss.Style
 	switch {
 	case isCursor:
-		style = CursorStyle.Width(width)
+		style = CursorStyle
 	case isSelected:
-		style = SelectedStyle.Width(width)
+		style = SelectedStyle
 	case entry.Info.IsDir:
-		style = DirStyle.Width(width)
+		style = DirStyle
 	case entry.Info.LinkTarget != "":
-		style = SymlinkStyle.Width(width)
+		style = SymlinkStyle
 	case entry.Info.Mode&0111 != 0:
-		style = ExecStyle.Width(width)
+		style = ExecStyle
 	case strings.HasPrefix(entry.Info.Name, "."):
-		style = HiddenStyle.Width(width)
+		style = HiddenStyle
 	default:
-		style = FileStyle.Width(width)
+		style = FileStyle
 	}
-
-	return style.Render(line)
+	return style.Width(width).MaxWidth(width).MaxHeight(1).Render(line)
 }
 
 // renderScrollIndicator 渲染滚动指示器
@@ -583,14 +581,7 @@ func (p *FilePanel) ensureVisible() {
 
 // shortenPath 缩短路径显示
 func (p FilePanel) shortenPath(path string, maxLen int) string {
-	if len(path) <= maxLen {
-		return path
-	}
-	// 保留文件名和尾部
-	if maxLen > 5 {
-		return "..." + path[len(path)-maxLen+3:]
-	}
-	return path[:maxLen]
+	return shared.TruncateDisplayWidthTail(path, maxLen)
 }
 
 // ============================================================
@@ -656,11 +647,5 @@ func formatTime(t time.Time) string {
 
 // truncate 截断字符串
 func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	if maxLen > 3 {
-		return s[:maxLen-3] + "..."
-	}
-	return s[:maxLen]
+	return shared.TruncateDisplayWidth(s, maxLen)
 }
