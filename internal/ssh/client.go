@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -20,26 +21,53 @@ import (
 	"golang.org/x/term"
 )
 
-// Connect 连接到 SSH 会话
+// Connect 连接到 SSH 会话并接管当前终端。
 func Connect(s *session.Session) error {
+	client, cleanup, err := Dial(s)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	defer runCleanup(cleanup)
+	return connectInteractive(s, client)
+}
+
+// Dial 建立 SSH 客户端连接。交互式调用可在缺少密码时读取终端。
+func Dial(s *session.Session) (*ssh.Client, func(), error) {
+	if err := prepareDialSession(s, true); err != nil {
+		return nil, nil, err
+	}
+	return dialSession(context.Background(), s, make(map[string]bool))
+}
+
+// DialContext 建立受 context 控制的非交互式 SSH 连接。
+// TCP 连接、代理拨号和 SSH 握手均受取消与超时约束。
+func DialContext(ctx context.Context, s *session.Session) (*ssh.Client, func(), error) {
+	if ctx == nil {
+		return nil, nil, fmt.Errorf("dial context is required")
+	}
+	if err := prepareDialSession(s, false); err != nil {
+		return nil, nil, err
+	}
+	return dialSession(ctx, s, make(map[string]bool))
+}
+
+func prepareDialSession(s *session.Session, interactive bool) error {
+	if s == nil {
+		return fmt.Errorf("session is required")
+	}
 	if !s.Valid {
 		return fmt.Errorf("invalid session: %v", s.Error)
 	}
-
-	// 如果有多种认证方式配置，按顺序尝试
-	if len(s.AuthMethods) > 0 {
-		return connectWithMultipleAuth(s)
-	}
-
-	// 延迟解密密码（SecureCRT 会话）
 	if s.AuthType == session.AuthTypePassword && s.Password == "" && s.EncryptedPassword != "" {
 		if err := s.ResolvePassword(); err != nil {
 			return fmt.Errorf("failed to resolve password: %w", err)
 		}
 	}
-
-	// 密码认证但未设置密码时，交互式输入
 	if s.AuthType == session.AuthTypePassword && s.Password == "" {
+		if !interactive {
+			return fmt.Errorf("password is required for non-interactive SSH connection")
+		}
 		fmt.Printf("Password for %s@%s: ", s.User, s.Host)
 		pw, err := term.ReadPassword(int(syscall.Stdin))
 		fmt.Println()
@@ -48,114 +76,95 @@ func Connect(s *session.Session) error {
 		}
 		s.Password = string(pw)
 	}
-
-	switch s.AuthType {
-	case session.AuthTypePassword, session.AuthTypeKey, session.AuthTypeAgent:
-		return connectSingle(s)
-	default:
-		return fmt.Errorf("unsupported auth type: %s", s.AuthType)
-	}
+	return nil
 }
 
-// Dial 建立 SSH 客户端连接（不创建交互式会话）
-// 返回 *ssh.Client 和可选的 cleanup 函数（用于关闭 SSH Agent 连接）
-// 调用方负责关闭 client，并在关闭后调用 cleanup（如果非 nil）
-func Dial(s *session.Session) (*ssh.Client, func(), error) {
-	if !s.Valid {
-		return nil, nil, fmt.Errorf("invalid session: %v", s.Error)
+func dialSession(ctx context.Context, s *session.Session, visited map[string]bool) (*ssh.Client, func(), error) {
+	identity := s.FilePath
+	if identity == "" {
+		identity = fmt.Sprintf("%s@%s:%d", s.User, s.Host, s.Port)
 	}
+	if visited[identity] {
+		return nil, nil, fmt.Errorf("proxy jump cycle detected at %s", identity)
+	}
+	visited[identity] = true
+	defer delete(visited, identity)
 
-	// 如果有多种认证方式配置，按顺序尝试
 	if len(s.AuthMethods) > 0 {
-		return dialWithMultipleAuth(s)
+		return dialWithMultipleAuth(ctx, s, visited)
 	}
-
-	// 延迟解密密码
-	if s.AuthType == session.AuthTypePassword && s.Password == "" && s.EncryptedPassword != "" {
-		if err := s.ResolvePassword(); err != nil {
-			return nil, nil, fmt.Errorf("failed to resolve password: %w", err)
-		}
-	}
-
-	// 密码认证但未设置密码时，交互式输入
-	if s.AuthType == session.AuthTypePassword && s.Password == "" {
-		fmt.Printf("Password for %s@%s: ", s.User, s.Host)
-		pw, err := term.ReadPassword(int(syscall.Stdin))
-		fmt.Println()
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to read password: %w", err)
-		}
-		s.Password = string(pw)
-	}
-
-	config, cleanup, err := getSSHConfig(s)
+	sshConfig, cleanup, err := getSSHConfig(s)
 	if err != nil {
 		return nil, nil, err
 	}
-
-	addr := net.JoinHostPort(s.Host, fmt.Sprintf("%d", s.Port))
-
-	// ProxyJump 支持：通过跳板机连接
 	if s.ProxyJump != "" {
-		return dialViaProxy(s, config, cleanup)
+		return dialViaProxy(ctx, s, sshConfig, cleanup, visited)
 	}
-
-	return dialSSHClientWithKeepalive(addr, config, cleanup)
+	addr := net.JoinHostPort(s.Host, fmt.Sprintf("%d", s.Port))
+	return dialSSHClientWithKeepalive(ctx, addr, sshConfig, cleanup)
 }
 
-// dialViaProxy 通过跳板机建立 SSH 连接
-func dialViaProxy(s *session.Session, targetConfig *ssh.ClientConfig, targetCleanup func()) (*ssh.Client, func(), error) {
-	// 加载跳板机会话
+// dialViaProxy 通过跳板机建立 SSH 连接。
+func dialViaProxy(ctx context.Context, s *session.Session, targetConfig *ssh.ClientConfig, targetCleanup func(), visited map[string]bool) (*ssh.Client, func(), error) {
 	proxySession, err := loadProxySession(s.ProxyJump)
 	if err != nil {
+		runCleanup(targetCleanup)
 		return nil, nil, fmt.Errorf("failed to load proxy session: %w", err)
 	}
+	if err := prepareDialSession(proxySession, false); err != nil {
+		runCleanup(targetCleanup)
+		return nil, nil, fmt.Errorf("invalid proxy session %s: %w", s.ProxyJump, err)
+	}
 
-	// 连接跳板机
-	proxyClient, proxyCleanup, err := Dial(proxySession)
+	proxyClient, proxyCleanup, err := dialSession(ctx, proxySession, visited)
 	if err != nil {
+		runCleanup(targetCleanup)
 		return nil, nil, fmt.Errorf("failed to connect to proxy %s: %w", s.ProxyJump, err)
 	}
 
-	// 通过跳板机拨号到目标
 	targetAddr := net.JoinHostPort(s.Host, fmt.Sprintf("%d", s.Port))
-	proxyConn, err := proxyClient.Dial("tcp", targetAddr)
+	proxyConn, err := proxyClient.DialContext(ctx, "tcp", targetAddr)
 	if err != nil {
 		proxyClient.Close()
-		if proxyCleanup != nil {
-			proxyCleanup()
-		}
+		runCleanup(proxyCleanup)
+		runCleanup(targetCleanup)
 		return nil, nil, fmt.Errorf("failed to dial target via proxy: %w", err)
 	}
 
-	// 通过代理连接创建 SSH 客户端
+	if err := setHandshakeDeadline(ctx, proxyConn); err != nil {
+		proxyConn.Close()
+		proxyClient.Close()
+		runCleanup(proxyCleanup)
+		runCleanup(targetCleanup)
+		return nil, nil, err
+	}
 	c, chans, reqs, err := ssh.NewClientConn(proxyConn, targetAddr, targetConfig)
 	if err != nil {
 		proxyConn.Close()
 		proxyClient.Close()
-		if proxyCleanup != nil {
-			proxyCleanup()
-		}
+		runCleanup(proxyCleanup)
+		runCleanup(targetCleanup)
 		return nil, nil, fmt.Errorf("failed to create SSH connection via proxy: %w", err)
 	}
+	_ = proxyConn.SetDeadline(time.Time{})
 
 	client := ssh.NewClient(c, chans, reqs)
-
 	keepaliveCtx, keepaliveCancel := context.WithCancel(context.Background())
 	go startKeepalive(keepaliveCtx, client)
 
 	combinedCleanup := func() {
 		keepaliveCancel()
 		proxyClient.Close()
-		if proxyCleanup != nil {
-			proxyCleanup()
-		}
-		if targetCleanup != nil {
-			targetCleanup()
-		}
+		runCleanup(proxyCleanup)
+		runCleanup(targetCleanup)
 	}
-
 	return client, combinedCleanup, nil
+}
+
+func runCleanup(cleanup func()) {
+	if cleanup != nil {
+		cleanup()
+	}
 }
 
 // loadProxySession 加载跳板机会话
@@ -195,46 +204,56 @@ func decryptAuthMethodPassword(encryptedPwd, masterPwd, source string) (string, 
 	return d.Decrypt(encryptedPwd, masterPwd)
 }
 
-// dialSSHClientWithKeepalive 建立 TCP 连接 + SSH 握手 + 启动 keepalive，返回 client 和 cleanup
-func dialSSHClientWithKeepalive(addr string, sshConfig *ssh.ClientConfig, authCleanup func()) (*ssh.Client, func(), error) {
-	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
+// dialSSHClientWithKeepalive 建立 TCP 连接、SSH 握手和 keepalive。
+func dialSSHClientWithKeepalive(ctx context.Context, addr string, sshConfig *ssh.ClientConfig, authCleanup func()) (*ssh.Client, func(), error) {
+	dialer := net.Dialer{Timeout: 10 * time.Second}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
-		if authCleanup != nil {
-			authCleanup()
-		}
-		return nil, nil, fmt.Errorf("connection timeout: %w", err)
+		runCleanup(authCleanup)
+		return nil, nil, fmt.Errorf("connect SSH target: %w", err)
+	}
+	if err := setHandshakeDeadline(ctx, conn); err != nil {
+		conn.Close()
+		runCleanup(authCleanup)
+		return nil, nil, err
 	}
 
 	c, chans, reqs, err := ssh.NewClientConn(conn, addr, sshConfig)
 	if err != nil {
 		conn.Close()
-		if authCleanup != nil {
-			authCleanup()
-		}
-		return nil, nil, fmt.Errorf("failed to create SSH connection: %w", err)
+		runCleanup(authCleanup)
+		return nil, nil, fmt.Errorf("SSH handshake failed: %w", err)
 	}
+	_ = conn.SetDeadline(time.Time{})
 
 	client := ssh.NewClient(c, chans, reqs)
-
 	keepaliveCtx, keepaliveCancel := context.WithCancel(context.Background())
 	go startKeepalive(keepaliveCtx, client)
-
 	combinedCleanup := func() {
 		keepaliveCancel()
-		if authCleanup != nil {
-			authCleanup()
-		}
+		runCleanup(authCleanup)
 	}
-
 	return client, combinedCleanup, nil
 }
 
-// dialWithMultipleAuth 按顺序尝试多种认证方式建立连接（不创建交互式会话）
-func dialWithMultipleAuth(s *session.Session) (*ssh.Client, func(), error) {
-	var lastErr error
+func setHandshakeDeadline(ctx context.Context, conn net.Conn) error {
+	deadline := time.Now().Add(10 * time.Second)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	if err := conn.SetDeadline(deadline); err != nil {
+		return fmt.Errorf("set SSH handshake deadline: %w", err)
+	}
+	return nil
+}
 
+// dialWithMultipleAuth 按顺序尝试多种认证方式。
+func dialWithMultipleAuth(ctx context.Context, s *session.Session, visited map[string]bool) (*ssh.Client, func(), error) {
+	var lastErr error
 	for i, authMethod := range s.AuthMethods {
-		// 延迟解密密码（如果需要）
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		if authMethod.Type == "password" && authMethod.Password == "" && authMethod.EncryptedPassword != "" {
 			decrypted, err := decryptAuthMethodPassword(authMethod.EncryptedPassword, s.MasterPassword, s.PasswordSource)
 			if err != nil {
@@ -245,75 +264,30 @@ func dialWithMultipleAuth(s *session.Session) (*ssh.Client, func(), error) {
 			s.AuthMethods[i].Password = decrypted
 		}
 
-		config, cleanup, err := getSSHConfigForAuthMethod(s, authMethod)
+		sshConfig, cleanup, err := getSSHConfigForAuthMethod(s, authMethod)
 		if err != nil {
 			lastErr = fmt.Errorf("auth method %d (%s): %w", i+1, authMethod.Type, err)
 			continue
 		}
 
-		addr := net.JoinHostPort(s.Host, fmt.Sprintf("%d", s.Port))
-		client, combinedCleanup, err := dialSSHClientWithKeepalive(addr, config, cleanup)
+		var client *ssh.Client
+		var combinedCleanup func()
+		if s.ProxyJump != "" {
+			client, combinedCleanup, err = dialViaProxy(ctx, s, sshConfig, cleanup, visited)
+		} else {
+			addr := net.JoinHostPort(s.Host, fmt.Sprintf("%d", s.Port))
+			client, combinedCleanup, err = dialSSHClientWithKeepalive(ctx, addr, sshConfig, cleanup)
+		}
 		if err != nil {
 			lastErr = fmt.Errorf("auth method %d (%s): %w", i+1, authMethod.Type, err)
 			continue
 		}
-
 		return client, combinedCleanup, nil
 	}
-
 	if lastErr != nil {
 		return nil, nil, fmt.Errorf("all authentication methods failed: %w", lastErr)
 	}
 	return nil, nil, fmt.Errorf("all authentication methods failed")
-}
-
-// connectWithMultipleAuth 按顺序尝试多种认证方式
-func connectWithMultipleAuth(s *session.Session) error {
-	var lastErr error
-	var cleanups []func()
-	defer func() {
-		for _, cleanup := range cleanups {
-			cleanup()
-		}
-	}()
-
-	for i, authMethod := range s.AuthMethods {
-		// 延迟解密密码（如果需要）
-		if authMethod.Type == "password" && authMethod.Password == "" && authMethod.EncryptedPassword != "" {
-			decrypted, err := decryptAuthMethodPassword(authMethod.EncryptedPassword, s.MasterPassword, s.PasswordSource)
-			if err != nil {
-				lastErr = fmt.Errorf("auth method %d (%s): failed to decrypt password: %w", i+1, authMethod.Type, err)
-				continue
-			}
-			authMethod.Password = decrypted
-			s.AuthMethods[i].Password = decrypted
-		}
-
-		config, cleanup, err := getSSHConfigForAuthMethod(s, authMethod)
-		if err != nil {
-			lastErr = fmt.Errorf("auth method %d (%s): %w", i+1, authMethod.Type, err)
-			continue
-		}
-
-		if cleanup != nil {
-			cleanups = append(cleanups, cleanup)
-		}
-
-		// 尝试连接
-		err = connectInteractive(s, config)
-		if err == nil {
-			// 连接成功
-			return nil
-		}
-
-		// 记录错误，继续尝试下一个认证方法
-		lastErr = fmt.Errorf("auth method %d (%s): %w", i+1, authMethod.Type, err)
-	}
-
-	if lastErr != nil {
-		return fmt.Errorf("all authentication methods failed: %w", lastErr)
-	}
-	return fmt.Errorf("all authentication methods failed")
 }
 
 // resolveTerminalType 返回发送给远端的终端类型。
@@ -327,70 +301,87 @@ func resolveTerminalType() string {
 	return "xterm-256color"
 }
 
-// getHostKeyCallback 获取主机密钥验证回调
-// 默认跳过验证（便捷优先），仅当配置中显式设 strict_host_key: true 时才启用 known_hosts 验证
+var knownHostsMu sync.Mutex
+
+// getHostKeyCallback 获取主机密钥验证回调。
+// 默认保持兼容模式；显式 strict_host_key=true 后任何配置或持久化错误都失败关闭。
 func getHostKeyCallback() ssh.HostKeyCallback {
 	cfg, err := config.LoadGlobalConfig()
-	// 配置加载失败时，按默认行为（忽略验证）处理，避免因配置异常触发 known_hosts 检查
-	if err != nil || !cfg.SSH.IsStrictHostKey() {
+	if err != nil {
+		return rejectingHostKeyCallback(fmt.Errorf("load SSH host-key configuration: %w", err))
+	}
+	if !cfg.SSH.IsStrictHostKey() {
 		return ssh.InsecureIgnoreHostKey()
 	}
 
-	// 仅当显式配置 strict_host_key: true 时，才使用 known_hosts 验证
 	knownHostsPath, err := config.GetKnownHostsPath()
-	if err != nil || knownHostsPath == "" {
-		// 无法获取 known_hosts 路径，回退到忽略
-		return ssh.InsecureIgnoreHostKey()
+	if err != nil {
+		return rejectingHostKeyCallback(fmt.Errorf("resolve known_hosts path: %w", err))
 	}
-
-	if _, statErr := os.Stat(knownHostsPath); statErr != nil {
-		// known_hosts 文件不存在，回退到忽略
-		return ssh.InsecureIgnoreHostKey()
+	if err := os.MkdirAll(filepath.Dir(knownHostsPath), 0700); err != nil {
+		return rejectingHostKeyCallback(fmt.Errorf("create known_hosts directory: %w", err))
+	}
+	f, err := os.OpenFile(knownHostsPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return rejectingHostKeyCallback(fmt.Errorf("open known_hosts: %w", err))
+	}
+	if err := f.Close(); err != nil {
+		return rejectingHostKeyCallback(fmt.Errorf("close known_hosts: %w", err))
 	}
 
 	hostKeyCallback, err := knownhosts.New(knownHostsPath)
 	if err != nil {
-		// 解析 known_hosts 失败，回退到忽略
-		return ssh.InsecureIgnoreHostKey()
+		return rejectingHostKeyCallback(fmt.Errorf("parse known_hosts: %w", err))
 	}
 
-	// TOFU: Trust on First Use
-	// 未知主机（不在 known_hosts 中）→ 接受并写入
-	// 已知主机但密钥变更 → 拒绝（可能 MITM 攻击）
 	return func(hostname string, remote net.Addr, key ssh.PublicKey) error {
 		err := hostKeyCallback(hostname, remote, key)
 		if err == nil {
-			return nil // 主机密钥匹配
+			return nil
 		}
 
 		var keyErr *knownhosts.KeyError
-		if errors.As(err, &keyErr) {
-			if len(keyErr.Want) == 0 {
-				// 未知主机 - TOFU: 首次连接自动信任
-				appendHostKey(knownHostsPath, remote, key)
-				return nil
-			}
-			// 密钥变更 - 可能是中间人攻击，拒绝连接
-			return fmt.Errorf("WARNING: host key for %s has changed! This could indicate a MITM attack: %w", hostname, err)
+		if !errors.As(err, &keyErr) {
+			return err
 		}
-
-		return err
+		if len(keyErr.Want) != 0 {
+			return fmt.Errorf("WARNING: host key for %s has changed; possible MITM attack: %w", hostname, err)
+		}
+		if err := appendHostKey(knownHostsPath, hostname, key); err != nil {
+			return fmt.Errorf("trust-on-first-use failed for %s: %w", hostname, err)
+		}
+		return nil
 	}
 }
 
-// appendHostKey 将主机密钥追加到 known_hosts 文件（尽力而为）
-func appendHostKey(knownHostsPath string, remote net.Addr, key ssh.PublicKey) {
+func rejectingHostKeyCallback(reason error) ssh.HostKeyCallback {
+	return func(string, net.Addr, ssh.PublicKey) error {
+		return reason
+	}
+}
+
+// appendHostKey 将主机密钥安全追加到 known_hosts。
+func appendHostKey(knownHostsPath, hostname string, key ssh.PublicKey) error {
+	if hostname == "" || key == nil {
+		return fmt.Errorf("hostname and public key are required")
+	}
+	knownHostsMu.Lock()
+	defer knownHostsMu.Unlock()
+
 	f, err := os.OpenFile(knownHostsPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "警告: 无法打开 known_hosts 文件 %s: %v\n", knownHostsPath, err)
-		return
+		return err
 	}
-	defer f.Close()
-
-	line := knownhosts.Line([]string{knownhosts.Normalize(remote.String())}, key)
+	line := knownhosts.Line([]string{knownhosts.Normalize(hostname)}, key)
 	if _, err := fmt.Fprintf(f, "%s\n", line); err != nil {
-		fmt.Fprintf(os.Stderr, "警告: 无法写入 known_hosts 文件 %s: %v\n", knownHostsPath, err)
+		_ = f.Close()
+		return err
 	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // getSSHConfig 根据认证类型获取 SSH 客户端配置
@@ -409,17 +400,11 @@ func getSSHConfig(s *session.Session) (*ssh.ClientConfig, func(), error) {
 			ssh.Password(s.Password),
 		}
 	case session.AuthTypeKey:
-		key, err := os.ReadFile(s.KeyPath)
+		signers, err := loadPrivateKeySigners(s.KeyPath)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to read key file: %w", err)
+			return nil, nil, err
 		}
-		signer, err := ssh.ParsePrivateKey(key)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to parse private key: %w", err)
-		}
-		sshConfig.Auth = []ssh.AuthMethod{
-			ssh.PublicKeys(signer),
-		}
+		sshConfig.Auth = []ssh.AuthMethod{ssh.PublicKeys(signers...)}
 	case session.AuthTypeAgent:
 		authMethod, agentConn, err := getSSHAgentAuth()
 		if err != nil {
@@ -449,45 +434,11 @@ func getSSHConfigForAuthMethod(s *session.Session, authMethod session.AuthMethod
 			ssh.Password(authMethod.Password),
 		}
 	case "key", "publickey":
-		keyPath := authMethod.KeyPath
-		var signers []ssh.Signer
-
-		if keyPath != "" {
-			// 使用指定的密钥文件
-			key, err := os.ReadFile(keyPath)
-			if err != nil {
-				return nil, nil, fmt.Errorf("failed to read key file: %w", err)
-			}
-			signer, err := ssh.ParsePrivateKey(key)
-			if err != nil {
-				return nil, nil, fmt.Errorf("failed to parse private key: %w", err)
-			}
-			signers = append(signers, signer)
-		} else {
-			// 如果没有指定密钥文件，自动查找 ~/.ssh/ 下的默认密钥
-			defaultKeys := findDefaultSSHKeys()
-			if len(defaultKeys) == 0 {
-				return nil, nil, fmt.Errorf("no key path specified and no default SSH keys found in ~/.ssh")
-			}
-			for _, keyFile := range defaultKeys {
-				key, err := os.ReadFile(keyFile)
-				if err != nil {
-					continue // 跳过无法读取的密钥
-				}
-				signer, err := ssh.ParsePrivateKey(key)
-				if err != nil {
-					continue // 跳过无法解析的密钥
-				}
-				signers = append(signers, signer)
-			}
-			if len(signers) == 0 {
-				return nil, nil, fmt.Errorf("found default SSH keys in ~/.ssh but failed to load any of them")
-			}
+		signers, err := loadPrivateKeySigners(authMethod.KeyPath)
+		if err != nil {
+			return nil, nil, err
 		}
-
-		sshConfig.Auth = []ssh.AuthMethod{
-			ssh.PublicKeys(signers...),
-		}
+		sshConfig.Auth = []ssh.AuthMethod{ssh.PublicKeys(signers...)}
 	case "agent":
 		authMethod, agentConn, err := getSSHAgentAuth()
 		if err != nil {
@@ -517,6 +468,36 @@ func getSSHConfigForAuthMethod(s *session.Session, authMethod session.AuthMethod
 	}
 
 	return sshConfig, cleanup, nil
+}
+
+func loadPrivateKeySigners(keyPath string) ([]ssh.Signer, error) {
+	keyPaths := []string{keyPath}
+	if keyPath == "" {
+		keyPaths = findDefaultSSHKeys()
+		if len(keyPaths) == 0 {
+			return nil, fmt.Errorf("no key path specified and no default SSH keys found in ~/.ssh")
+		}
+	}
+
+	signers := make([]ssh.Signer, 0, len(keyPaths))
+	var lastErr error
+	for _, candidate := range keyPaths {
+		key, err := os.ReadFile(candidate)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read key file %s: %w", candidate, err)
+			continue
+		}
+		signer, err := ssh.ParsePrivateKey(key)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to parse private key %s: %w", candidate, err)
+			continue
+		}
+		signers = append(signers, signer)
+	}
+	if len(signers) == 0 {
+		return nil, lastErr
+	}
+	return signers, nil
 }
 
 // findDefaultSSHKeys 查找 ~/.ssh/ 目录下的默认 SSH 密钥文件
@@ -604,54 +585,18 @@ func getSSHAgentAuth() (ssh.AuthMethod, net.Conn, error) {
 	return ssh.PublicKeysCallback(agentClient.Signers), conn, nil
 }
 
-// connectInteractive 建立交互式 SSH 连接
-func connectInteractive(s *session.Session, config *ssh.ClientConfig) error {
-	var client *ssh.Client
-	var proxyCleanup func()
-
-	if s.ProxyJump != "" {
-		// 通过跳板机连接
-		var err error
-		client, proxyCleanup, err = dialViaProxy(s, config, nil)
-		if err != nil {
-			return fmt.Errorf("failed to connect via proxy: %w", err)
-		}
-	} else {
-		addr := net.JoinHostPort(s.Host, fmt.Sprintf("%d", s.Port))
-
-		// 设置连接超时为10秒（业界标准）
-		conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
-		if err != nil {
-			return fmt.Errorf("connection timeout: %w", err)
-		}
-
-		// 使用已建立的连接创建 SSH 客户端
-		c, chans, reqs, err := ssh.NewClientConn(conn, addr, config)
-		if err != nil {
-			conn.Close()
-			return fmt.Errorf("failed to create SSH connection: %w", err)
-		}
-		client = ssh.NewClient(c, chans, reqs)
-	}
-	defer client.Close()
-	if proxyCleanup != nil {
-		defer proxyCleanup()
-	}
-
+// connectInteractive 在已建立的 SSH client 上启动交互式终端。
+func connectInteractive(s *session.Session, client *ssh.Client) error {
 	sess, err := client.NewSession()
 	if err != nil {
 		return fmt.Errorf("failed to create session: %w", err)
 	}
 	defer sess.Close()
 
-	// 获取终端尺寸
 	width, height, err := term.GetSize(int(os.Stdin.Fd()))
 	if err != nil {
 		width, height = 80, 24
 	}
-
-	// 配置终端模式
-	// ONLCR: 将输出中的 \n 转换为 \r\n，解决换行问题
 	modes := ssh.TerminalModes{
 		ssh.ECHO:          1,
 		ssh.ONLCR:         1,
@@ -659,101 +604,34 @@ func connectInteractive(s *session.Session, config *ssh.ClientConfig) error {
 		ssh.TTY_OP_ISPEED: 14400,
 		ssh.TTY_OP_OSPEED: 14400,
 	}
-
-	termType := resolveTerminalType()
-
-	// 请求伪终端
-	if err := sess.RequestPty(termType, height, width, modes); err != nil {
+	if err := sess.RequestPty(resolveTerminalType(), height, width, modes); err != nil {
 		return fmt.Errorf("failed to request pty: %w", err)
 	}
 
-	// 将本地终端设为 raw 模式（必须在启动 shell 之前）
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
 		return fmt.Errorf("failed to make terminal raw: %w", err)
 	}
 	defer term.Restore(int(os.Stdin.Fd()), oldState)
 
-	// 获取 stdin/stdout/stderr pipes
-	stdinPipe, err := sess.StdinPipe()
-	if err != nil {
-		return fmt.Errorf("failed to get stdin pipe: %w", err)
-	}
-	defer stdinPipe.Close()
-
-	stdoutPipe, err := sess.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("failed to get stdout pipe: %w", err)
-	}
-
-	stderrPipe, err := sess.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("failed to get stderr pipe: %w", err)
-	}
-
-	// 启动 shell
+	sess.Stdin = os.Stdin
+	sess.Stdout = os.Stdout
+	sess.Stderr = os.Stderr
 	if err := sess.Shell(); err != nil {
 		return fmt.Errorf("failed to start shell: %w", err)
 	}
 
-	// 设置窗口大小调整处理
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-
 	go handleWindowResize(ctx, sess)
 
-	// 使用 goroutines 在本地终端和 SSH session 之间传输数据
-	errChan := make(chan error, 3)
-
-	// 本地 stdin -> 远程 stdin
-	go func() {
-		_, err := io.Copy(stdinPipe, os.Stdin)
-		if err != nil {
-			errChan <- fmt.Errorf("stdin copy error: %w", err)
-		}
-	}()
-
-	// 远程 stdout -> 本地 stdout
-	go func() {
-		_, err := io.Copy(os.Stdout, stdoutPipe)
-		if err != nil {
-			errChan <- fmt.Errorf("stdout copy error: %w", err)
-		}
-	}()
-
-	// 远程 stderr -> 本地 stderr
-	go func() {
-		_, err := io.Copy(os.Stderr, stderrPipe)
-		if err != nil {
-			errChan <- fmt.Errorf("stderr copy error: %w", err)
-		}
-	}()
-
-	// 等待会话结束
-	err = sess.Wait()
-	// 关闭 stdinPipe 使 stdin io.Copy goroutine 能退出
-	stdinPipe.Close()
-	if err != nil {
-		// ExitError 表示远程命令以非零状态退出，属于正常退出
+	if err := sess.Wait(); err != nil {
 		if _, ok := err.(*ssh.ExitError); ok {
 			return nil
 		}
 		return err
 	}
-
 	return nil
-}
-
-// connectSingle 使用单一认证方式建立交互式 SSH 连接
-func connectSingle(s *session.Session) error {
-	config, cleanup, err := getSSHConfig(s)
-	if err != nil {
-		return err
-	}
-	if cleanup != nil {
-		defer cleanup()
-	}
-	return connectInteractive(s, config)
 }
 
 // handleWindowResize 处理终端窗口大小调整
@@ -776,28 +654,14 @@ func handleWindowResize(ctx context.Context, sess *ssh.Session) {
 	}
 }
 
-// ConnectWithIO 使用自定义输入输出流连接
+// ConnectWithIO 使用自定义输入输出流建立 SSH 终端。
 func ConnectWithIO(s *session.Session, stdin io.Reader, stdout, stderr io.Writer) error {
-	if !s.Valid {
-		return fmt.Errorf("invalid session: %v", s.Error)
-	}
-
-	switch s.AuthType {
-	case session.AuthTypePassword, session.AuthTypeKey, session.AuthTypeAgent:
-		return connectSingleIO(s, stdin, stdout, stderr)
-	default:
-		return fmt.Errorf("unsupported auth type: %s", s.AuthType)
-	}
-}
-
-// connectWithIO 建立非交互式 SSH 连接（支持自定义 IO）
-func connectWithIO(s *session.Session, stdin io.Reader, stdout, stderr io.Writer, config *ssh.ClientConfig) error {
-	addr := net.JoinHostPort(s.Host, fmt.Sprintf("%d", s.Port))
-	client, err := ssh.Dial("tcp", addr, config)
+	client, cleanup, err := DialContext(context.Background(), s)
 	if err != nil {
-		return fmt.Errorf("failed to dial: %w", err)
+		return err
 	}
 	defer client.Close()
+	defer runCleanup(cleanup)
 
 	sess, err := client.NewSession()
 	if err != nil {
@@ -805,7 +669,6 @@ func connectWithIO(s *session.Session, stdin io.Reader, stdout, stderr io.Writer
 	}
 	defer sess.Close()
 
-	// 请求伪终端
 	modes := ssh.TerminalModes{
 		ssh.ECHO:          1,
 		ssh.ONLCR:         1,
@@ -813,89 +676,20 @@ func connectWithIO(s *session.Session, stdin io.Reader, stdout, stderr io.Writer
 		ssh.TTY_OP_ISPEED: 14400,
 		ssh.TTY_OP_OSPEED: 14400,
 	}
-
-	termType := resolveTerminalType()
-
-	if err := sess.RequestPty(termType, 24, 80, modes); err != nil {
+	if err := sess.RequestPty(resolveTerminalType(), 24, 80, modes); err != nil {
 		return fmt.Errorf("failed to request pty: %w", err)
 	}
-
-	// 获取 pipes
-	stdinPipe, err := sess.StdinPipe()
-	if err != nil {
-		return fmt.Errorf("failed to get stdin pipe: %w", err)
-	}
-	defer stdinPipe.Close()
-
-	stdoutPipe, err := sess.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("failed to get stdout pipe: %w", err)
-	}
-
-	stderrPipe, err := sess.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("failed to get stderr pipe: %w", err)
-	}
-
+	sess.Stdin = stdin
+	sess.Stdout = stdout
+	sess.Stderr = stderr
 	if err := sess.Shell(); err != nil {
 		return fmt.Errorf("failed to start shell: %w", err)
 	}
-
-	// 使用 goroutines 传输数据
-	errChan := make(chan error, 3)
-
-	go func() {
-		_, err := io.Copy(stdinPipe, stdin)
-		if err != nil {
-			errChan <- fmt.Errorf("stdin copy error: %w", err)
-		}
-	}()
-
-	go func() {
-		_, err := io.Copy(stdout, stdoutPipe)
-		if err != nil {
-			errChan <- fmt.Errorf("stdout copy error: %w", err)
-		}
-	}()
-
-	go func() {
-		_, err := io.Copy(stderr, stderrPipe)
-		if err != nil {
-			errChan <- fmt.Errorf("stderr copy error: %w", err)
-		}
-	}()
-
 	if err := sess.Wait(); err != nil {
-		// 关闭 stdinPipe 使 stdin io.Copy goroutine 能退出
-		stdinPipe.Close()
 		if exitErr, ok := err.(*ssh.ExitError); ok {
 			return fmt.Errorf("ssh session exited with code %d", exitErr.ExitStatus())
 		}
 		return err
 	}
-	// 关闭 stdinPipe 使 stdin io.Copy goroutine 能退出
-	stdinPipe.Close()
-
-	// 检查传输错误
-	select {
-	case err := <-errChan:
-		if err != nil {
-			return err
-		}
-	default:
-	}
-
 	return nil
-}
-
-// connectSingleIO 使用单一认证方式建立 SSH 连接（支持自定义 IO）
-func connectSingleIO(s *session.Session, stdin io.Reader, stdout, stderr io.Writer) error {
-	config, cleanup, err := getSSHConfig(s)
-	if err != nil {
-		return err
-	}
-	if cleanup != nil {
-		defer cleanup()
-	}
-	return connectWithIO(s, stdin, stdout, stderr, config)
 }

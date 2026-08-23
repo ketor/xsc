@@ -2,7 +2,6 @@ package tui
 
 import (
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/charmbracelet/bubbles/help"
@@ -132,6 +131,41 @@ var commands = []Command{
 	{Name: "pw", Aliases: []string{"password"}, Description: "切换密码明文显示"},
 }
 
+var topMenus = []shared.Menu{
+	{
+		Label: "File",
+		Items: []shared.MenuItem{
+			{Label: "New Session", Shortcut: "n", Action: "new"},
+			{Label: "Reload", Shortcut: "R", Action: "reload"},
+			{Label: "Quit", Shortcut: "q", Action: "quit"},
+		},
+	},
+	{
+		Label: "Session",
+		Items: []shared.MenuItem{
+			{Label: "Connect", Shortcut: "Enter", Action: "connect"},
+			{Label: "Edit", Shortcut: "e", Action: "edit"},
+			{Label: "Rename", Shortcut: "c", Action: "rename"},
+			{Label: "Delete", Shortcut: "D", Action: "delete"},
+		},
+	},
+	{
+		Label: "View",
+		Items: []shared.MenuItem{
+			{Label: "Search", Shortcut: "/", Action: "search"},
+			{Label: "Expand All", Shortcut: "E", Action: "expand-all"},
+			{Label: "Collapse All", Shortcut: "C", Action: "collapse-all"},
+			{Label: "Show Password", Shortcut: ":pw", Action: "password"},
+		},
+	},
+	{
+		Label: "Help",
+		Items: []shared.MenuItem{
+			{Label: "Keyboard Help", Shortcut: "?", Action: "help"},
+		},
+	},
+}
+
 // AgentKeyCache SSH Agent keys 缓存
 type AgentKeyCache struct {
 	keys      []internalssh.AgentKeyInfo
@@ -165,6 +199,7 @@ type showErrorMsg struct {
 type sessionsLoadedMsg struct {
 	tree        *session.SessionNode
 	sessionsDir string
+	err         error
 }
 
 // editorCompleteMsg 编辑器完成消息
@@ -214,6 +249,7 @@ type Model struct {
 	width         int
 	height        int
 	sessionsDir   string
+	menu          shared.MenuState
 	searchInput   textinput.Model
 	searchMode    bool
 	searchQuery   string
@@ -224,6 +260,7 @@ type Model struct {
 	showHelp      bool
 	showError     bool
 	errorMessage  string
+	loadWarning   string
 	agentKeyCache *AgentKeyCache
 	lastKeyG      bool // 用于检测 'gg' 快捷键
 	showPassword  bool // 是否显示密码明文，默认隐藏
@@ -311,10 +348,10 @@ func (m Model) Init() tea.Cmd {
 }
 
 // Run 启动 TUI
-func Run() {
-	p := tea.NewProgram(initialModel(), tea.WithAltScreen(), tea.WithMouseCellMotion())
+func Run() error {
+	p := tea.NewProgram(initialModel(), tea.WithAltScreen(), tea.WithMouseAllMotion())
 	if _, err := p.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("TUI 运行失败: %w", err)
 	}
+	return nil
 }

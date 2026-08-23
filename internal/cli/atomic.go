@@ -41,11 +41,25 @@ func WriteYAML(path string, v any) error {
 	if err := tmp.Chmod(0600); err != nil {
 		return fmt.Errorf("设置文件权限失败: %w", err)
 	}
+	if err := tmp.Sync(); err != nil {
+		return fmt.Errorf("同步临时文件失败: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("关闭临时文件失败: %w", err)
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("原子重命名失败: %w", err)
+	}
+	dirHandle, err := os.Open(dir)
+	if err != nil {
+		return fmt.Errorf("打开目标目录失败: %w", err)
+	}
+	if err := dirHandle.Sync(); err != nil {
+		_ = dirHandle.Close()
+		return fmt.Errorf("同步目标目录失败: %w", err)
+	}
+	if err := dirHandle.Close(); err != nil {
+		return fmt.Errorf("关闭目标目录失败: %w", err)
 	}
 
 	success = true

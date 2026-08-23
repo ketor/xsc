@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -29,120 +30,128 @@ func init() {
 }
 
 func main() {
-	if len(os.Args) < 2 {
-		// 默认显示帮助信息
+	os.Exit(run(os.Args[1:]))
+}
+
+func run(args []string) int {
+	if len(args) == 0 {
 		showHelp()
-		return
+		return 0
+	}
+	command := args[0]
+	commandArgs := args[1:]
+
+	switch command {
+	case "tui", "connect", "ls", "cat", "get", "put", "mkdir", "rm", "stat", "cp", "mv", "rename":
+		cfg, err := config.LoadGlobalConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "读取配置失败: %v\n", err)
+			return 1
+		}
+		if err := shared.EnsureMasterPasswords(cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "读取主密码失败: %v\n", err)
+			return 1
+		}
 	}
 
-	command := os.Args[1]
-
-	// 解密外部 session 前补齐主密码（TTY 场景下交互式提示）
-	switch command {
-	case "tui", "connect", "ls", "cat", "get", "put", "mkdir", "rm", "stat":
-		if cfg, err := config.LoadGlobalConfig(); err == nil {
-			if perr := shared.EnsureMasterPasswords(cfg); perr != nil {
-				fmt.Fprintf(os.Stderr, "读取主密码失败: %v\n", perr)
-				os.Exit(1)
-			}
+	requireArgs := func(minimum, maximum int, usage string) bool {
+		_, positional := hasJSONFlag(commandArgs)
+		if len(positional) < minimum || (maximum >= 0 && len(positional) > maximum) {
+			fmt.Fprintln(os.Stderr, usage)
+			return false
 		}
+		return true
 	}
 
 	switch command {
 	case "tui":
-		// TUI 模式：启动会话选择器
+		if len(commandArgs) != 0 {
+			fmt.Fprintln(os.Stderr, "Usage: xftp tui")
+			return 1
+		}
 		if err := xftp.Run(nil); err != nil {
 			fmt.Fprintf(os.Stderr, "TUI 启动失败: %v\n", err)
-			os.Exit(1)
+			return 1
 		}
+		return 0
 	case "connect":
-		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: xftp connect <session_path>")
-			os.Exit(1)
+		if !requireArgs(1, 1, "Usage: xftp connect <session_path>") {
+			return 1
 		}
-		connectAndRun(os.Args[2])
+		return connectAndRun(commandArgs[0])
 	case "ls":
-		if len(os.Args) < 3 {
-			fmt.Fprintln(os.Stderr, "Usage: xftp ls <session_path> [remote_path]")
-			os.Exit(1)
+		if !requireArgs(1, 2, "Usage: xftp ls <session_path> [remote_path]") {
+			return 1
 		}
-		lsCommand(os.Args[2:])
+		return lsCommand(commandArgs)
 	case "cat":
-		if len(os.Args) < 4 {
-			fmt.Fprintln(os.Stderr, "Usage: xftp cat <session_path> <remote_path>")
-			os.Exit(1)
+		if !requireArgs(2, 2, "Usage: xftp cat <session_path> <remote_path>") {
+			return 1
 		}
-		catCommand(os.Args[2:])
+		return catCommand(commandArgs)
 	case "get":
-		if len(os.Args) < 5 {
-			fmt.Fprintln(os.Stderr, "Usage: xftp get <session_path> <remote_path> <local_path>")
-			os.Exit(1)
+		if !requireArgs(3, 3, "Usage: xftp get <session_path> <remote_path> <local_path>") {
+			return 1
 		}
-		getCommand(os.Args[2:])
+		return getCommand(commandArgs)
 	case "put":
-		if len(os.Args) < 5 {
-			fmt.Fprintln(os.Stderr, "Usage: xftp put <session_path> <local_path> <remote_path>")
-			os.Exit(1)
+		if !requireArgs(3, 3, "Usage: xftp put <session_path> <local_path> <remote_path>") {
+			return 1
 		}
-		putCommand(os.Args[2:])
+		return putCommand(commandArgs)
 	case "mkdir":
-		if len(os.Args) < 4 {
-			fmt.Fprintln(os.Stderr, "Usage: xftp mkdir <session_path> <remote_path>")
-			os.Exit(1)
+		if !requireArgs(2, 2, "Usage: xftp mkdir <session_path> <remote_path>") {
+			return 1
 		}
-		mkdirCommand(os.Args[2:])
+		return mkdirCommand(commandArgs)
 	case "rm":
-		if len(os.Args) < 4 {
-			fmt.Fprintln(os.Stderr, "Usage: xftp rm <session_path> <remote_path>")
-			os.Exit(1)
+		if !requireArgs(2, 2, "Usage: xftp rm <session_path> <remote_path>") {
+			return 1
 		}
-		rmCommand(os.Args[2:])
+		return rmCommand(commandArgs)
 	case "stat":
-		if len(os.Args) < 4 {
-			fmt.Fprintln(os.Stderr, "Usage: xftp stat <session_path> <remote_path>")
-			os.Exit(1)
+		if !requireArgs(2, 2, "Usage: xftp stat <session_path> <remote_path>") {
+			return 1
 		}
-		statCommand(os.Args[2:])
+		return statCommand(commandArgs)
 	case "cp":
-		if len(os.Args) < 5 {
-			fmt.Fprintln(os.Stderr, "Usage: xftp cp <session_path> <src_path> <dest_path>")
-			os.Exit(1)
+		if !requireArgs(3, 3, "Usage: xftp cp <session_path> <src_path> <dest_path>") {
+			return 1
 		}
-		cpCommand(os.Args[2:])
-	case "mv":
-		if len(os.Args) < 5 {
-			fmt.Fprintln(os.Stderr, "Usage: xftp mv <session_path> <src_path> <dest_path>")
-			os.Exit(1)
+		return cpCommand(commandArgs)
+	case "mv", "rename":
+		if !requireArgs(3, 3, "Usage: xftp mv <session_path> <src_path> <dest_path>") {
+			return 1
 		}
-		mvCommand(os.Args[2:])
-	case "rename":
-		if len(os.Args) < 5 {
-			fmt.Fprintln(os.Stderr, "Usage: xftp rename <session_path> <old_name> <new_name>")
-			os.Exit(1)
-		}
-		mvCommand(os.Args[2:]) // rename 是 mv 的别名
+		return mvCommand(commandArgs)
 	case "version", "--version", "-v":
 		fmt.Println(version.String("xftp"))
+		return 0
 	case "help", "--help", "-h":
 		showHelp()
+		return 0
 	default:
-		// 默认当作 session path 直连
-		connectAndRun(command)
+		if len(commandArgs) != 0 {
+			fmt.Fprintf(os.Stderr, "Unknown command: %s\n", command)
+			return 1
+		}
+		return connectAndRun(command)
 	}
 }
 
 // connectAndRun 查找 session 并启动 SFTP 文件管理器
-func connectAndRun(sessionPath string) {
+func connectAndRun(sessionPath string) int {
 	s, err := shared.FindSessionAllSources(sessionPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "会话未找到: %s\n", sessionPath)
-		os.Exit(1)
+		return 1
 	}
 
 	if err := xftp.Run(s); err != nil {
 		fmt.Fprintf(os.Stderr, "SFTP 会话失败: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
 
 // hasJSONFlag 检查参数列表中是否包含 --json 标志，并返回过滤后的参数
@@ -173,11 +182,12 @@ func connectSFTP(sessionPath string) (*sftp.Client, func(), error) {
 		return nil, nil, fmt.Errorf("认证失败: %w", err)
 	}
 
-	sshClient, sshCleanup, err := internalssh.Dial(s)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sshClient, sshCleanup, err := internalssh.DialContext(ctx, s)
 	if err != nil {
 		return nil, nil, fmt.Errorf("SSH 连接失败: %w", err)
 	}
-
 	sftpClient, err := sftp.NewClient(sshClient)
 	if err != nil {
 		sshClient.Close()
@@ -199,7 +209,7 @@ func connectSFTP(sessionPath string) (*sftp.Client, func(), error) {
 }
 
 // lsCommand 列出远程目录内容
-func lsCommand(args []string) {
+func lsCommand(args []string) int {
 	jsonOutput, args := hasJSONFlag(args)
 	sessionPath := args[0]
 	remotePath := "."
@@ -210,14 +220,14 @@ func lsCommand(args []string) {
 	sftpClient, cleanup, err := connectSFTP(sessionPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer cleanup()
 
 	entries, err := sftpClient.ReadDir(remotePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "读取目录失败: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	if jsonOutput {
@@ -251,10 +261,11 @@ func lsCommand(args []string) {
 			)
 		}
 	}
+	return 0
 }
 
 // catCommand 读取远程文件内容到标准输出
-func catCommand(args []string) {
+func catCommand(args []string) int {
 	jsonOutput, args := hasJSONFlag(args)
 	sessionPath := args[0]
 	remotePath := args[1]
@@ -262,14 +273,14 @@ func catCommand(args []string) {
 	sftpClient, cleanup, err := connectSFTP(sessionPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer cleanup()
 
 	f, err := sftpClient.Open(remotePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "打开文件失败: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer f.Close()
 
@@ -279,7 +290,7 @@ func catCommand(args []string) {
 	data, err := io.ReadAll(lr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "读取文件失败: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	if len(data) > maxSize {
@@ -299,10 +310,11 @@ func catCommand(args []string) {
 	} else {
 		os.Stdout.Write(data)
 	}
+	return 0
 }
 
 // getCommand 下载远程文件到本地
-func getCommand(args []string) {
+func getCommand(args []string) int {
 	jsonOutput, args := hasJSONFlag(args)
 	sessionPath := args[0]
 	remotePath := args[1]
@@ -311,28 +323,36 @@ func getCommand(args []string) {
 	sftpClient, cleanup, err := connectSFTP(sessionPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer cleanup()
 
 	remoteFile, err := sftpClient.Open(remotePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "打开远程文件失败: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer remoteFile.Close()
 
-	localFile, err := os.Create(localPath)
+	localFile, err := xftp.NewAtomicLocalFile(localPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "创建本地文件失败: %v\n", err)
-		os.Exit(1)
+		fmt.Fprintf(os.Stderr, "创建本地临时文件失败: %v\n", err)
+		return 1
 	}
-	defer localFile.Close()
+	defer localFile.Abort()
 
 	n, err := io.Copy(localFile, remoteFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "下载失败: %v\n", err)
-		os.Exit(1)
+		return 1
+	}
+	mode := os.FileMode(0600)
+	if info, statErr := remoteFile.Stat(); statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	if err := localFile.Commit(mode); err != nil {
+		fmt.Fprintf(os.Stderr, "提交下载文件失败: %v\n", err)
+		return 1
 	}
 
 	if jsonOutput {
@@ -347,10 +367,11 @@ func getCommand(args []string) {
 	} else {
 		fmt.Printf("已下载: %s → %s (%d 字节)\n", remotePath, localPath, n)
 	}
+	return 0
 }
 
 // putCommand 上传本地文件到远程
-func putCommand(args []string) {
+func putCommand(args []string) int {
 	jsonOutput, args := hasJSONFlag(args)
 	sessionPath := args[0]
 	localPath := args[1]
@@ -359,28 +380,36 @@ func putCommand(args []string) {
 	sftpClient, cleanup, err := connectSFTP(sessionPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer cleanup()
 
 	localFile, err := os.Open(localPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "打开本地文件失败: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer localFile.Close()
-
-	remoteFile, err := sftpClient.Create(remotePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "创建远程文件失败: %v\n", err)
-		os.Exit(1)
+	mode := os.FileMode(0644)
+	if info, statErr := localFile.Stat(); statErr == nil {
+		mode = info.Mode().Perm()
 	}
-	defer remoteFile.Close()
+
+	remoteFile, err := xftp.NewAtomicRemoteFile(sftpClient, remotePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "创建远程临时文件失败: %v\n", err)
+		return 1
+	}
+	defer remoteFile.Abort()
 
 	n, err := io.Copy(remoteFile, localFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "上传失败: %v\n", err)
-		os.Exit(1)
+		return 1
+	}
+	if err := remoteFile.Commit(mode); err != nil {
+		fmt.Fprintf(os.Stderr, "提交上传文件失败: %v\n", err)
+		return 1
 	}
 
 	if jsonOutput {
@@ -395,10 +424,11 @@ func putCommand(args []string) {
 	} else {
 		fmt.Printf("已上传: %s → %s (%d 字节)\n", localPath, remotePath, n)
 	}
+	return 0
 }
 
 // mkdirCommand 创建远程目录
-func mkdirCommand(args []string) {
+func mkdirCommand(args []string) int {
 	jsonOutput, args := hasJSONFlag(args)
 	sessionPath := args[0]
 	remotePath := args[1]
@@ -406,13 +436,13 @@ func mkdirCommand(args []string) {
 	sftpClient, cleanup, err := connectSFTP(sessionPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer cleanup()
 
 	if err := sftpClient.MkdirAll(remotePath); err != nil {
 		fmt.Fprintf(os.Stderr, "创建目录失败: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	if jsonOutput {
@@ -426,10 +456,11 @@ func mkdirCommand(args []string) {
 	} else {
 		fmt.Printf("已创建目录: %s\n", remotePath)
 	}
+	return 0
 }
 
 // rmCommand 删除远程文件或目录（递归）
-func rmCommand(args []string) {
+func rmCommand(args []string) int {
 	jsonOutput, args := hasJSONFlag(args)
 	sessionPath := args[0]
 	remotePath := args[1]
@@ -437,7 +468,7 @@ func rmCommand(args []string) {
 	sftpClient, cleanup, err := connectSFTP(sessionPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer cleanup()
 
@@ -445,18 +476,18 @@ func rmCommand(args []string) {
 	info, err := sftpClient.Stat(remotePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "获取文件信息失败: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	if info.IsDir() {
 		if err := removeDir(sftpClient, remotePath); err != nil {
 			fmt.Fprintf(os.Stderr, "删除目录失败: %v\n", err)
-			os.Exit(1)
+			return 1
 		}
 	} else {
 		if err := sftpClient.Remove(remotePath); err != nil {
 			fmt.Fprintf(os.Stderr, "删除文件失败: %v\n", err)
-			os.Exit(1)
+			return 1
 		}
 	}
 
@@ -471,10 +502,11 @@ func rmCommand(args []string) {
 	} else {
 		fmt.Printf("已删除: %s\n", remotePath)
 	}
+	return 0
 }
 
 // statCommand 获取远程文件/目录详细信息
-func statCommand(args []string) {
+func statCommand(args []string) int {
 	jsonOutput, args := hasJSONFlag(args)
 	sessionPath := args[0]
 	remotePath := args[1]
@@ -482,14 +514,14 @@ func statCommand(args []string) {
 	sftpClient, cleanup, err := connectSFTP(sessionPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer cleanup()
 
 	info, err := sftpClient.Stat(remotePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "获取文件信息失败: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	if jsonOutput {
@@ -517,10 +549,11 @@ func statCommand(args []string) {
 		fmt.Printf("类型:     %s\n", map[bool]string{true: "目录", false: "文件"}[info.IsDir()])
 		fmt.Printf("修改时间: %s\n", info.ModTime().Format(time.RFC3339))
 	}
+	return 0
 }
 
 // cpCommand 复制远程文件
-func cpCommand(args []string) {
+func cpCommand(args []string) int {
 	jsonOutput, args := hasJSONFlag(args)
 	sessionPath := args[0]
 	srcPath := args[1]
@@ -529,7 +562,7 @@ func cpCommand(args []string) {
 	sftpClient, cleanup, err := connectSFTP(sessionPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer cleanup()
 
@@ -537,23 +570,29 @@ func cpCommand(args []string) {
 	srcFile, err := sftpClient.Open(srcPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "打开源文件失败: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer srcFile.Close()
 
-	// 创建目标文件
-	dstFile, err := sftpClient.Create(dstPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "创建目标文件失败: %v\n", err)
-		os.Exit(1)
+	mode := os.FileMode(0644)
+	if info, statErr := srcFile.Stat(); statErr == nil {
+		mode = info.Mode().Perm()
 	}
-	defer dstFile.Close()
+	dstFile, err := xftp.NewAtomicRemoteFile(sftpClient, dstPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "创建目标临时文件失败: %v\n", err)
+		return 1
+	}
+	defer dstFile.Abort()
 
-	// 复制内容
 	n, err := io.Copy(dstFile, srcFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "复制失败: %v\n", err)
-		os.Exit(1)
+		return 1
+	}
+	if err := dstFile.Commit(mode); err != nil {
+		fmt.Fprintf(os.Stderr, "提交目标文件失败: %v\n", err)
+		return 1
 	}
 
 	if jsonOutput {
@@ -575,10 +614,11 @@ func cpCommand(args []string) {
 	} else {
 		fmt.Printf("已复制: %s → %s (%d 字节)\n", srcPath, dstPath, n)
 	}
+	return 0
 }
 
 // mvCommand 移动/重命名远程文件
-func mvCommand(args []string) {
+func mvCommand(args []string) int {
 	jsonOutput, args := hasJSONFlag(args)
 	sessionPath := args[0]
 	srcPath := args[1]
@@ -587,14 +627,14 @@ func mvCommand(args []string) {
 	sftpClient, cleanup, err := connectSFTP(sessionPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer cleanup()
 
 	// 执行重命名
 	if err := sftpClient.Rename(srcPath, dstPath); err != nil {
 		fmt.Fprintf(os.Stderr, "移动/重命名失败: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	if jsonOutput {
@@ -618,6 +658,7 @@ func mvCommand(args []string) {
 		}
 		fmt.Printf("已%s: %s → %s\n", action, srcPath, dstPath)
 	}
+	return 0
 }
 
 // removeDir 递归删除远程目录

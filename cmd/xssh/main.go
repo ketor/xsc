@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -9,8 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"golang.org/x/crypto/ssh"
 
 	"github.com/ketor/xsc/internal/cli"
 	"github.com/ketor/xsc/internal/mobaxterm"
@@ -32,144 +29,144 @@ func init() {
 }
 
 func main() {
-	if len(os.Args) < 2 {
-		// 默认显示帮助信息
+	os.Exit(run(os.Args[1:]))
+}
+
+func run(args []string) int {
+	if len(args) == 0 {
 		showHelp()
-		return
+		return cli.ExitOK
 	}
+	command := args[0]
+	commandArgs := args[1:]
 
-	command := os.Args[1]
-
-	// 解密外部 session 前补齐主密码（TTY 场景下交互式提示）。
-	// 命令白名单：只有真正需要密码的命令才触发。
 	switch command {
-	case "tui", "connect", "exec", "ping",
-		"import-securecrt", "import-xshell", "import-mobaxterm":
-		if cfg, err := config.LoadGlobalConfig(); err == nil {
-			if perr := shared.EnsureMasterPasswords(cfg); perr != nil {
-				fmt.Fprintf(os.Stderr, "读取主密码失败: %v\n", perr)
-				os.Exit(cli.ExitConfig)
-			}
+	case "tui", "connect", "exec", "ping", "import-securecrt", "import-xshell", "import-mobaxterm":
+		cfg, err := config.LoadGlobalConfig()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "读取配置失败: %v\n", err)
+			return cli.ExitConfig
+		}
+		if err := shared.EnsureMasterPasswords(cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "读取主密码失败: %v\n", err)
+			return cli.ExitConfig
 		}
 	}
 
 	switch command {
 	case "tui":
-		// TUI 模式
-		tui.Run()
+		if err := tui.Run(); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return cli.ExitFileOp
+		}
+		return cli.ExitOK
 	case "list":
 		params := ListParams{}
-		for _, a := range os.Args[2:] {
-			if a == "--json" {
+		for _, arg := range commandArgs {
+			if arg == "--json" {
 				params.JSON = true
+			} else {
+				fmt.Fprintf(os.Stderr, "unknown option: %s\n", arg)
+				return cli.ExitUsage
 			}
 		}
-		p := cli.NewPrinter(params.JSON, os.Stdout, os.Stderr)
-		os.Exit(handleList(context.Background(), params, p))
+		return handleList(context.Background(), params, cli.NewPrinter(params.JSON, os.Stdout, os.Stderr))
 	case "add":
-		params := parseAddArgs(os.Args[2:])
-		p := cli.NewPrinter(params.JSON, os.Stdout, os.Stderr)
-		os.Exit(handleAdd(context.Background(), params, p))
+		params := parseAddArgs(commandArgs)
+		return handleAdd(context.Background(), params, cli.NewPrinter(params.JSON, os.Stdout, os.Stderr))
 	case "show":
-		params := parseShowArgs(os.Args[2:])
-		p := cli.NewPrinter(params.JSON, os.Stdout, os.Stderr)
-		os.Exit(handleShow(context.Background(), params, p))
+		params := parseShowArgs(commandArgs)
+		return handleShow(context.Background(), params, cli.NewPrinter(params.JSON, os.Stdout, os.Stderr))
 	case "edit":
-		params := parseEditArgs(os.Args[2:])
-		p := cli.NewPrinter(params.JSON, os.Stdout, os.Stderr)
-		os.Exit(handleEdit(context.Background(), params, p))
+		params := parseEditArgs(commandArgs)
+		return handleEdit(context.Background(), params, cli.NewPrinter(params.JSON, os.Stdout, os.Stderr))
 	case "delete":
-		params := parseDeleteArgs(os.Args[2:])
-		p := cli.NewPrinter(params.JSON, os.Stdout, os.Stderr)
-		os.Exit(handleDelete(context.Background(), params, p))
+		params := parseDeleteArgs(commandArgs)
+		return handleDelete(context.Background(), params, cli.NewPrinter(params.JSON, os.Stdout, os.Stderr))
 	case "connect":
-		if len(os.Args) < 3 {
+		if len(commandArgs) != 1 {
 			fmt.Fprintln(os.Stderr, "Usage: xssh connect <session_path>")
-			os.Exit(1)
+			return cli.ExitUsage
 		}
-		connectSession(os.Args[2])
+		return connectSession(commandArgs[0])
 	case "ping":
-		if len(os.Args) < 3 {
+		if len(commandArgs) == 0 {
 			fmt.Fprintln(os.Stderr, "Usage: xssh ping <path>[,path2,...] [--json] [--timeout 10s] [--parallel 5]")
-			os.Exit(cli.ExitUsage)
+			return cli.ExitUsage
 		}
-		params := parsePingArgs(os.Args[2:])
-		p := cli.NewPrinter(params.JSON, os.Stdout, os.Stderr)
-		os.Exit(handlePing(context.Background(), params, p))
+		params := parsePingArgs(commandArgs)
+		return handlePing(context.Background(), params, cli.NewPrinter(params.JSON, os.Stdout, os.Stderr))
 	case "exec":
-		if len(os.Args) < 4 {
+		if len(commandArgs) < 2 {
 			fmt.Fprintln(os.Stderr, "Usage: xssh exec <session_path> [options] <command>")
-			os.Exit(1)
+			return cli.ExitUsage
 		}
-		// 逗号分隔的多路径 → 批量并发模式
-		if strings.Contains(os.Args[2], ",") {
-			params := parseExecMultiArgs(os.Args[2], os.Args[3:])
-			p := cli.NewPrinter(params.JSON, os.Stdout, os.Stderr)
-			os.Exit(handleExecMulti(context.Background(), params, p))
+		if strings.Contains(commandArgs[0], ",") {
+			params := parseExecMultiArgs(commandArgs[0], commandArgs[1:])
+			return handleExecMulti(context.Background(), params, cli.NewPrinter(params.JSON, os.Stdout, os.Stderr))
 		}
-		execCommand(os.Args[2], os.Args[3:])
+		return execCommand(commandArgs[0], commandArgs[1:])
 	case "import-securecrt":
-		convertSecureCRT()
+		return convertSecureCRT(commandArgs)
 	case "import-xshell":
-		convertXShell()
+		return convertXShell(commandArgs)
 	case "import-mobaxterm":
-		convertMobaXterm()
+		return convertMobaXterm(commandArgs)
 	case "version", "--version", "-v":
 		fmt.Println(version.String("xssh"))
+		return cli.ExitOK
 	case "help", "--help", "-h":
 		showHelp()
+		return cli.ExitOK
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", command)
 		showHelp()
-		os.Exit(1)
+		return cli.ExitUsage
 	}
 }
 
 // resolveSessionPassword 统一处理会话密码解析（委托到 shared 包）
 var resolveSessionPassword = shared.ResolveSessionPassword
 
-func connectSession(sessionPath string) {
+func connectSession(sessionPath string) int {
 	s, err := shared.FindSessionAllSources(sessionPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Session not found: %s\n", sessionPath)
-		os.Exit(cli.ExitNotFound)
+		fmt.Fprintf(os.Stderr, "Session lookup failed: %v\n", err)
+		return cli.ExitNotFound
 	}
-
 	if err := resolveSessionPassword(s); err != nil {
 		fmt.Fprintf(os.Stderr, "认证失败: %v\n", err)
-		os.Exit(cli.ExitAuthFailed)
+		return cli.ExitAuthFailed
 	}
-
 	if err := internalssh.Connect(s); err != nil {
 		fmt.Fprintf(os.Stderr, "Connection failed: %v\n", err)
-		os.Exit(cli.ExitConnFailed)
+		return cli.ExitConnFailed
 	}
+	return cli.ExitOK
 }
 
-// execCommand 在远程主机上执行命令
-func execCommand(sessionPath string, args []string) {
-	timeout := 30 // 默认超时 30 秒
+// execCommand 在远程主机上执行命令。
+func execCommand(sessionPath string, args []string) int {
+	timeout := 30
 	jsonOutput := false
 	var cmdArgs []string
-
-	// 解析选项
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "-t", "--timeout":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "错误: -t/--timeout 需要指定超时秒数")
-				os.Exit(1)
+				return cli.ExitUsage
 			}
 			i++
-			t, err := strconv.Atoi(args[i])
-			if err != nil || t <= 0 {
+			value, err := strconv.Atoi(args[i])
+			if err != nil || value <= 0 {
 				fmt.Fprintln(os.Stderr, "错误: 超时秒数必须为正整数")
-				os.Exit(1)
+				return cli.ExitUsage
 			}
-			if t > 300 {
-				t = 300
+			if value > 300 {
+				value = 300
 			}
-			timeout = t
+			timeout = value
 		case "--json":
 			jsonOutput = true
 		default:
@@ -178,97 +175,58 @@ func execCommand(sessionPath string, args []string) {
 	}
 
 	p := cli.NewPrinter(jsonOutput, os.Stdout, os.Stderr)
-
 	if len(cmdArgs) == 0 {
 		p.PrintErr(cli.NewCLIError(cli.ExitUsage, "未指定要执行的命令", ""))
-		os.Exit(cli.ExitUsage)
+		return cli.ExitUsage
 	}
-	command := strings.Join(cmdArgs, " ")
-
-	// 查找会话（支持本地 YAML + SecureCRT/XShell/MobaXterm）
 	s, err := shared.FindSessionAllSources(sessionPath)
 	if err != nil {
-		p.PrintErr(cli.NewCLIError(cli.ExitNotFound, "会话未找到", sessionPath))
-		os.Exit(cli.ExitNotFound)
+		p.PrintErr(cli.NewCLIError(cli.ExitNotFound, "会话查找失败", err.Error()))
+		return cli.ExitNotFound
 	}
-
 	if err := resolveSessionPassword(s); err != nil {
 		p.PrintErr(cli.NewCLIError(cli.ExitAuthFailed, "认证失败", err.Error()))
-		os.Exit(cli.ExitAuthFailed)
+		return cli.ExitAuthFailed
 	}
 
-	// 建立 SSH 连接
-	client, cleanup, err := internalssh.Dial(s)
-	if err != nil {
-		p.PrintErr(cli.NewCLIError(cli.ExitConnFailed, "SSH 连接失败", err.Error()))
-		os.Exit(cli.ExitConnFailed)
-	}
-	defer client.Close()
-	if cleanup != nil {
-		defer cleanup()
-	}
-
-	// 创建会话
-	sshSession, err := client.NewSession()
-	if err != nil {
-		p.PrintErr(cli.NewCLIError(cli.ExitConnFailed, "创建 SSH 会话失败", err.Error()))
-		os.Exit(cli.ExitConnFailed)
-	}
-	defer sshSession.Close()
-
-	var stdoutBuf, stderrBuf bytes.Buffer
-	sshSession.Stdout = &stdoutBuf
-	sshSession.Stderr = &stderrBuf
-
-	// 使用 context 实现超时
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
 	defer cancel()
-
-	// 在 goroutine 中执行命令
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- sshSession.Run(command)
-	}()
-
-	var runErr error
-	select {
-	case <-ctx.Done():
-		sshSession.Signal(ssh.SIGKILL)
-		runErr = fmt.Errorf("命令执行超时（%d秒）", timeout)
-	case runErr = <-errCh:
-	}
-
-	exitCode := 0
+	result, runErr := internalssh.RunCommand(ctx, s, strings.Join(cmdArgs, " "), internalssh.DefaultMaxOutputBytes)
+	exitCode := result.ExitCode
 	if runErr != nil {
-		if exitErr, ok := runErr.(*ssh.ExitError); ok {
-			exitCode = exitErr.ExitStatus()
-		} else if ctx.Err() != nil {
+		if ctx.Err() != nil {
 			exitCode = cli.ExitTimeout
 		} else {
-			exitCode = 1
+			exitCode = cli.ExitConnFailed
 		}
 	}
 
 	if p.IsJSON() {
-		result := map[string]interface{}{
-			"stdout":    stdoutBuf.String(),
-			"stderr":    stderrBuf.String(),
-			"exit_code": exitCode,
+		output := map[string]interface{}{
+			"stdout":           result.Stdout,
+			"stderr":           result.Stderr,
+			"exit_code":        exitCode,
+			"stdout_truncated": result.StdoutTruncated,
+			"stderr_truncated": result.StderrTruncated,
 		}
-		if runErr != nil && ctx.Err() != nil {
-			result["error"] = runErr.Error()
+		if runErr != nil {
+			output["error"] = runErr.Error()
 		}
-		p.Print(result)
+		p.Print(output)
 	} else {
-		if stdoutBuf.Len() > 0 {
-			fmt.Print(stdoutBuf.String())
+		fmt.Fprint(os.Stdout, result.Stdout)
+		fmt.Fprint(os.Stderr, result.Stderr)
+		if result.StdoutTruncated {
+			fmt.Fprintln(os.Stderr, "xsc: stdout 已截断")
 		}
-		if stderrBuf.Len() > 0 {
-			fmt.Fprint(os.Stderr, stderrBuf.String())
+		if result.StderrTruncated {
+			fmt.Fprintln(os.Stderr, "xsc: stderr 已截断")
+		}
+		if runErr != nil && result.Stderr == "" {
+			fmt.Fprintln(os.Stderr, runErr)
 		}
 	}
-
-	os.Exit(exitCode)
+	return exitCode
 }
 
 // importSession 描述可导入的会话来源
@@ -289,88 +247,80 @@ type importSource struct {
 	loadAndConvert    func() ([]importSession, error) // 加载并转换会话
 }
 
-func convertSessions(src importSource) {
+func convertSessions(src importSource) int {
 	if !src.enabled {
 		fmt.Fprintf(os.Stderr, "%s is not enabled in config\n", src.name)
-		os.Exit(cli.ExitConfig)
+		return cli.ExitConfig
 	}
-
 	sessions, err := src.loadAndConvert()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading %s sessions: %v\n", src.name, err)
-		os.Exit(cli.ExitConfig)
+		return cli.ExitConfig
 	}
-
 	if len(sessions) == 0 {
 		fmt.Fprintf(os.Stderr, "No %s sessions found\n", src.name)
-		return
+		return cli.ExitOK
 	}
-
-	// 获取 sessions 目录
 	sessionsDir, err := config.GetSessionsDir()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error getting sessions directory: %v\n", err)
-		os.Exit(cli.ExitConfig)
+		return cli.ExitConfig
 	}
-
-	// 创建新的目录（年月日-时分秒格式）
 	timestamp := time.Now().Format("20060102-150405")
 	targetDir := filepath.Join(sessionsDir, src.dirPrefix, timestamp)
+	if err := os.MkdirAll(targetDir, 0700); err != nil {
+		fmt.Fprintf(os.Stderr, "Error creating target directory: %v\n", err)
+		return cli.ExitFileOp
+	}
 
 	fmt.Fprintf(os.Stderr, "Converting %d %s sessions...\n", len(sessions), src.name)
 	fmt.Fprintf(os.Stderr, "Target directory: %s\n\n", targetDir)
-
 	converted := 0
-	errors := 0
-
-	for _, s := range sessions {
-		// 处理解密错误
-		if s.DecryptErr != nil {
+	errorCount := 0
+	for _, imported := range sessions {
+		if imported.DecryptErr != nil {
 			if src.skipDecryptErrors {
-				fmt.Fprintf(os.Stderr, "  ⚠ %s: 解密跳过: %v\n", s.Name, s.DecryptErr)
+				fmt.Fprintf(os.Stderr, "  ⚠ %s: 解密跳过: %v\n", imported.Name, imported.DecryptErr)
 			} else {
-				fmt.Fprintf(os.Stderr, "  ✗ %s: 解密失败: %v\n", s.Name, s.DecryptErr)
-				errors++
+				fmt.Fprintf(os.Stderr, "  ✗ %s: 解密失败: %v\n", imported.Name, imported.DecryptErr)
+				errorCount++
 				continue
 			}
 		}
 
-		xsshSession := buildXSSHSessionFromImport(s)
-
-		// 构建目标路径（保持目录层次结构）
-		var targetPath string
-		if s.Folder != "" {
-			targetPath = filepath.Join(targetDir, s.Folder, s.Name+".yaml")
-		} else {
-			targetPath = filepath.Join(targetDir, s.Name+".yaml")
+		xsshSession := buildXSSHSessionFromImport(imported)
+		relativePath := imported.Name
+		if imported.Folder != "" {
+			relativePath = filepath.Join(imported.Folder, imported.Name)
 		}
-
-		// 保存会话
-		if err := session.SaveSession(xsshSession, targetPath); err != nil {
-			fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", s.Name, err)
-			errors++
+		targetPath, err := session.ResolveSessionFile(targetDir, relativePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "  ✗ %s: unsafe import path: %v\n", imported.Name, err)
+			errorCount++
 			continue
 		}
-
-		fmt.Fprintf(os.Stderr, "  ✓ %s\n", s.Name)
+		if err := session.SaveSession(xsshSession, targetPath); err != nil {
+			fmt.Fprintf(os.Stderr, "  ✗ %s: %v\n", imported.Name, err)
+			errorCount++
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "  ✓ %s\n", imported.Name)
 		converted++
 	}
-
-	fmt.Fprintf(os.Stderr, "\n✓ Converted: %d | ✗ Errors: %d\n", converted, errors)
+	fmt.Fprintf(os.Stderr, "\n✓ Converted: %d | ✗ Errors: %d\n", converted, errorCount)
 	fmt.Fprintf(os.Stderr, "\nConverted sessions are saved in: %s\n", targetDir)
-	fmt.Fprintf(os.Stderr, "\nYou can now use 'xssh tui' to browse and connect to these sessions.\n")
-
-	if errors > 0 {
-		if converted == 0 {
-			os.Exit(cli.ExitConfig)
-		}
-		os.Exit(cli.ExitPartial)
+	fmt.Fprintln(os.Stderr, "\nYou can now use 'xssh tui' to browse and connect to these sessions.")
+	if errorCount == 0 {
+		return cli.ExitOK
 	}
+	if converted == 0 {
+		return cli.ExitConfig
+	}
+	return cli.ExitPartial
 }
 
-// parseImportArgs 解析 import 命令的 --skip-decrypt-errors 参数
-func parseImportArgs() bool {
-	for _, arg := range os.Args[2:] {
+func parseImportArgs(args []string) bool {
+	for _, arg := range args {
 		if arg == "--skip-decrypt-errors" {
 			return true
 		}
@@ -382,60 +332,71 @@ func parseImportArgs() bool {
 type sessionFlags struct {
 	Path, Host, User, AuthType, Password, KeyPath, ProxyJump string
 	Port                                                     int
+	Force                                                    bool
 	JSON                                                     bool
+	Err                                                      error
 }
 
 func parseSessionFlags(args []string) sessionFlags {
-	var f sessionFlags
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--host":
-			if i+1 < len(args) {
-				i++
-				f.Host = args[i]
+	var result sessionFlags
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		nextValue := func() (string, bool) {
+			if index+1 >= len(args) {
+				result.Err = fmt.Errorf("%s requires a value", arg)
+				return "", false
+			}
+			index++
+			return args[index], true
+		}
+		switch arg {
+		case "--host", "--user", "--auth-type", "--password", "--key", "--proxy-jump":
+			value, ok := nextValue()
+			if !ok {
+				return result
+			}
+			switch arg {
+			case "--host":
+				result.Host = value
+			case "--user":
+				result.User = value
+			case "--auth-type":
+				result.AuthType = value
+			case "--password":
+				result.Password = value
+			case "--key":
+				result.KeyPath = value
+			case "--proxy-jump":
+				result.ProxyJump = value
 			}
 		case "--port":
-			if i+1 < len(args) {
-				i++
-				if p, err := strconv.Atoi(args[i]); err == nil {
-					f.Port = p
-				}
+			value, ok := nextValue()
+			if !ok {
+				return result
 			}
-		case "--user":
-			if i+1 < len(args) {
-				i++
-				f.User = args[i]
+			port, err := strconv.Atoi(value)
+			if err != nil || port < 1 || port > 65535 {
+				result.Err = fmt.Errorf("--port must be between 1 and 65535")
+				return result
 			}
-		case "--auth-type":
-			if i+1 < len(args) {
-				i++
-				f.AuthType = args[i]
-			}
-		case "--password":
-			if i+1 < len(args) {
-				i++
-				f.Password = args[i]
-			}
-		case "--key":
-			if i+1 < len(args) {
-				i++
-				f.KeyPath = args[i]
-			}
-		case "--proxy-jump":
-			if i+1 < len(args) {
-				i++
-				f.ProxyJump = args[i]
-			}
+			result.Port = port
+		case "--force":
+			result.Force = true
 		case "--json":
-			f.JSON = true
+			result.JSON = true
 		default:
-			// 第一个非 flag 参数是路径
-			if !strings.HasPrefix(args[i], "-") && f.Path == "" {
-				f.Path = args[i]
+			if strings.HasPrefix(arg, "-") {
+				result.Err = fmt.Errorf("unknown option: %s", arg)
+				return result
 			}
+			if result.Path != "" {
+				result.Err = fmt.Errorf("unexpected argument: %s", arg)
+				return result
+			}
+			result.Path = arg
 		}
 	}
-	return f
+	return result
 }
 
 // parseAddArgs 解析 add 命令参数
@@ -444,18 +405,25 @@ func parseAddArgs(args []string) AddParams {
 	return AddParams{
 		Path: f.Path, Host: f.Host, Port: f.Port, User: f.User,
 		AuthType: f.AuthType, Password: f.Password, KeyPath: f.KeyPath,
-		ProxyJump: f.ProxyJump, JSON: f.JSON,
+		ProxyJump: f.ProxyJump, Force: f.Force, JSON: f.JSON, ParseErr: f.Err,
 	}
 }
 
 // parseShowArgs 解析 show 命令参数
 func parseShowArgs(args []string) ShowParams {
-	params := ShowParams{}
+	var params ShowParams
 	for _, arg := range args {
-		if arg == "--json" {
+		switch {
+		case arg == "--json":
 			params.JSON = true
-		} else if !strings.HasPrefix(arg, "-") && params.Path == "" {
+		case strings.HasPrefix(arg, "-"):
+			params.ParseErr = fmt.Errorf("unknown option: %s", arg)
+			return params
+		case params.Path == "":
 			params.Path = arg
+		default:
+			params.ParseErr = fmt.Errorf("unexpected argument: %s", arg)
+			return params
 		}
 	}
 	return params
@@ -467,38 +435,44 @@ func parseEditArgs(args []string) EditParams {
 	return EditParams{
 		Path: f.Path, Host: f.Host, Port: f.Port, User: f.User,
 		AuthType: f.AuthType, Password: f.Password, KeyPath: f.KeyPath,
-		ProxyJump: f.ProxyJump, JSON: f.JSON,
+		ProxyJump: f.ProxyJump, JSON: f.JSON, ParseErr: f.Err,
 	}
 }
 
 // parseDeleteArgs 解析 delete 命令参数
 func parseDeleteArgs(args []string) DeleteParams {
-	params := DeleteParams{}
+	var params DeleteParams
 	for _, arg := range args {
-		if arg == "--force" {
+		switch {
+		case arg == "--force":
 			params.Force = true
-		} else if arg == "--json" {
+		case arg == "--json":
 			params.JSON = true
-		} else if !strings.HasPrefix(arg, "-") && params.Path == "" {
+		case strings.HasPrefix(arg, "-"):
+			params.ParseErr = fmt.Errorf("unknown option: %s", arg)
+			return params
+		case params.Path == "":
 			params.Path = arg
+		default:
+			params.ParseErr = fmt.Errorf("unexpected argument: %s", arg)
+			return params
 		}
 	}
 	return params
 }
 
-// doImport 统一的导入入口：加载配置 → 构建 importSource → convertSessions
-func doImport(name, dirPrefix string, buildSource func(gc *config.GlobalConfig, skipDecrypt bool) importSource) {
-	skipDecrypt := parseImportArgs()
+func doImport(args []string, buildSource func(gc *config.GlobalConfig, skipDecrypt bool) importSource) int {
+	skipDecrypt := parseImportArgs(args)
 	globalConfig, err := config.LoadGlobalConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading global config: %v\n", err)
-		os.Exit(cli.ExitConfig)
+		return cli.ExitConfig
 	}
-	convertSessions(buildSource(globalConfig, skipDecrypt))
+	return convertSessions(buildSource(globalConfig, skipDecrypt))
 }
 
-func convertSecureCRT() {
-	doImport("SecureCRT", "securecrt-converted", func(gc *config.GlobalConfig, skipDecrypt bool) importSource {
+func convertSecureCRT(args []string) int {
+	return doImport(args, func(gc *config.GlobalConfig, skipDecrypt bool) importSource {
 		return importSource{
 			name:              "SecureCRT",
 			dirPrefix:         "securecrt-converted",
@@ -523,8 +497,8 @@ func convertSecureCRT() {
 	})
 }
 
-func convertXShell() {
-	doImport("Xshell", "xshell-converted", func(gc *config.GlobalConfig, skipDecrypt bool) importSource {
+func convertXShell(args []string) int {
+	return doImport(args, func(gc *config.GlobalConfig, skipDecrypt bool) importSource {
 		return importSource{
 			name:              "Xshell",
 			dirPrefix:         "xshell-converted",
@@ -549,8 +523,8 @@ func convertXShell() {
 	})
 }
 
-func convertMobaXterm() {
-	doImport("MobaXterm", "mobaxterm-converted", func(gc *config.GlobalConfig, skipDecrypt bool) importSource {
+func convertMobaXterm(args []string) int {
+	return doImport(args, func(gc *config.GlobalConfig, skipDecrypt bool) importSource {
 		return importSource{
 			name:              "MobaXterm",
 			dirPrefix:         "mobaxterm-converted",

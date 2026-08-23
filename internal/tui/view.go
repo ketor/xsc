@@ -13,12 +13,11 @@ import (
 	"github.com/ketor/xsc/internal/xshell"
 )
 
-// View 渲染界面
+// View 渲染界面。
 func (m Model) View() string {
 	if m.showHelp {
 		return m.renderHelp()
 	}
-
 	if m.showError {
 		errorStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#fb4934")).
@@ -26,65 +25,100 @@ func (m Model) View() string {
 			Padding(1).
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(lipgloss.Color("#fb4934"))
-		return errorStyle.Render(m.errorMessage + "\n\nPress any key to continue...")
+		return errorStyle.Render(m.errorMessage + "\n\nPress any key or click to continue...")
 	}
-
 	if m.width == 0 || m.height == 0 {
 		return "Loading..."
 	}
 
-	// 计算布局
+	var auxiliary string
+	switch {
+	case m.searchMode:
+		auxiliary = m.renderSearchBar()
+	case m.lineNumMode:
+		auxiliary = m.renderLineNumBar()
+	case m.newSessionMode:
+		auxiliary = m.renderNewSessionBar()
+	case m.renameMode:
+		auxiliary = m.renderRenameBar()
+	case m.deleteConfirmMode:
+		auxiliary = m.renderDeleteConfirmBar()
+	case m.contextMenu.visible:
+		auxiliary = m.renderContextMenuBar()
+	}
+
+	dropdownHeight := 0
+	if m.menu.Open {
+		dropdownHeight = len(topMenus[m.menu.Active].Items)
+	}
+	reservedRows := 2 + dropdownHeight // 顶部菜单 + 状态栏
+	if auxiliary != "" {
+		reservedRows++
+	}
+	contentHeight := max(1, m.height-reservedRows)
 	treeWidth := m.width * 70 / 100
-	detailWidth := m.width * 30 / 100
-	contentHeight := m.height - 2 // 留出状态栏空间
-
-	// 计算可见节点一次，传递给各 render 函数
+	detailWidth := m.width - treeWidth
 	visibleNodes := m.getVisibleNodes()
-
-	// 构建树形视图
 	treeView := m.renderTree(treeWidth, contentHeight, visibleNodes)
-
-	// 构建详情视图
 	detailView := m.renderDetail(detailWidth, contentHeight)
-
-	// 合并主内容区
 	content := lipgloss.JoinHorizontal(lipgloss.Top, treeView, detailView)
 
-	// 构建状态栏
-	statusBar := m.renderStatusBar(visibleNodes)
-
-	// 合并所有内容
-	if m.searchMode {
-		searchBar := m.renderSearchBar()
-		return lipgloss.JoinVertical(lipgloss.Left, content, statusBar, searchBar)
+	rows := []string{m.renderTopMenuBar()}
+	if m.menu.Open {
+		rows = append(rows, m.renderDropdownMenu())
 	}
-
-	if m.lineNumMode {
-		lineNumBar := m.renderLineNumBar()
-		return lipgloss.JoinVertical(lipgloss.Left, content, statusBar, lineNumBar)
+	rows = append(rows, content, m.renderStatusBar(visibleNodes))
+	if auxiliary != "" {
+		rows = append(rows, auxiliary)
 	}
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+}
 
-	if m.newSessionMode {
-		newSessionBar := m.renderNewSessionBar()
-		return lipgloss.JoinVertical(lipgloss.Left, content, statusBar, newSessionBar)
+func (m Model) renderTopMenuBar() string {
+	parts := make([]string, 0, len(topMenus))
+	for index, menu := range topMenus {
+		style := lipgloss.NewStyle().
+			Background(lipgloss.Color("#3c3836")).
+			Foreground(lipgloss.Color("#ebdbb2")).
+			Padding(0, 1)
+		if m.menu.Open && m.menu.Active == index {
+			style = style.Background(lipgloss.Color("#fabd2f")).
+				Foreground(lipgloss.Color("#282828")).
+				Bold(true)
+		}
+		parts = append(parts, style.Render(menu.Label))
 	}
+	bar := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+	return lipgloss.NewStyle().
+		Background(lipgloss.Color("#3c3836")).
+		Width(m.width).
+		Render(bar)
+}
 
-	if m.renameMode {
-		renameBar := m.renderRenameBar()
-		return lipgloss.JoinVertical(lipgloss.Left, content, statusBar, renameBar)
+func (m Model) renderDropdownMenu() string {
+	menu := topMenus[m.menu.Active]
+	startX := shared.MenuStartX(topMenus, m.menu.Active)
+	width := 0
+	for _, item := range menu.Items {
+		width = max(width, len([]rune(item.Label))+len([]rune(item.Shortcut))+5)
 	}
-
-	if m.deleteConfirmMode {
-		deleteConfirmBar := m.renderDeleteConfirmBar()
-		return lipgloss.JoinVertical(lipgloss.Left, content, statusBar, deleteConfirmBar)
+	lines := make([]string, 0, len(menu.Items))
+	for index, item := range menu.Items {
+		label := item.Label
+		padding := max(1, width-len([]rune(item.Label))-len([]rune(item.Shortcut))-2)
+		line := " " + label + strings.Repeat(" ", padding) + item.Shortcut + " "
+		style := lipgloss.NewStyle().
+			Width(width).
+			Background(lipgloss.Color("#504945")).
+			Foreground(lipgloss.Color("#ebdbb2"))
+		if index == m.menu.Cursor {
+			style = style.Background(lipgloss.Color("#fabd2f")).
+				Foreground(lipgloss.Color("#282828")).
+				Bold(true)
+		}
+		lines = append(lines, strings.Repeat(" ", startX)+style.Render(line))
 	}
-
-	if m.contextMenu.visible {
-		menuBar := m.renderContextMenuBar()
-		return lipgloss.JoinVertical(lipgloss.Left, content, statusBar, menuBar)
-	}
-
-	return lipgloss.JoinVertical(lipgloss.Left, content, statusBar)
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
 // computeTreeOffset 计算树形视图的滚动偏移量
@@ -464,6 +498,9 @@ func (m Model) renderStatusBar(visibleNodes []*session.SessionNode) string {
 	}
 	if m.showPassword {
 		status.WriteString("[PW] ")
+	}
+	if m.loadWarning != "" {
+		status.WriteString("Warning: " + m.loadWarning + " | ")
 	}
 	status.WriteString("Press ? for help, :q or Ctrl+c to quit")
 

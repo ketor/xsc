@@ -15,7 +15,7 @@ XSSH 是一个 SSH 会话管理器，主要功能包括：
 
 ## 技术栈
 
-- **语言**: Go 1.21+
+- **语言**: Go 1.25+
 - **TUI 框架**: [Bubble Tea](https://github.com/charmbracelet/bubbletea) v0.25.0
 - **UI 组件**: [Bubbles](https://github.com/charmbracelet/bubbles) v0.18.0
 - **样式**: [Lipgloss](https://github.com/charmbracelet/lipgloss) v0.9.1
@@ -98,7 +98,7 @@ go test -v ./internal/ssh/...
 go test -v ./internal/securecrt/...
 
 # 运行特定测试函数
-go test -v ./internal/securecrt/... -run TestDecryptPasswordV2Real
+go test -v ./internal/securecrt/... -run TestDecryptPasswordV2Synthetic
 
 # 带覆盖率报告
 go test -v -cover ./...

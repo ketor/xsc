@@ -1,6 +1,8 @@
 package session
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +10,11 @@ import (
 	"sync"
 
 	"gopkg.in/yaml.v3"
+)
+
+var (
+	ErrSessionNotFound  = errors.New("session not found")
+	ErrSessionAmbiguous = errors.New("session path is ambiguous")
 )
 
 // PasswordDecrypter 密码解密接口
@@ -108,6 +115,9 @@ func (s *Session) Validate() error {
 	if s.Port == 0 {
 		s.Port = 22
 	}
+	if s.Port < 1 || s.Port > 65535 {
+		return fmt.Errorf("port must be between 1 and 65535")
+	}
 	if s.User == "" {
 		s.User = os.Getenv("USER")
 		if s.User == "" {
@@ -197,7 +207,9 @@ func LoadSession(filePath string) (*Session, error) {
 	}
 
 	var session Session
-	if err := yaml.Unmarshal(data, &session); err != nil {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&session); err != nil {
 		session.FilePath = filePath
 		session.Name = filepath.Base(filePath)
 		session.Name = session.Name[:len(session.Name)-len(filepath.Ext(session.Name))]
@@ -240,28 +252,121 @@ func SaveSession(session *Session, filePath string) error {
 	return nil
 }
 
-// FindSession 在指定目录下查找匹配的 session
-// 支持精确路径匹配和模糊名称匹配
-func FindSession(sessionsDir, path string) (*Session, error) {
-	// 尝试精确匹配
-	s, err := LoadSession(filepath.Join(sessionsDir, path+".yaml"))
-	if err == nil && s != nil && s.Valid {
-		return s, nil
+// ResolveSessionFile 将用户提供的会话路径解析为 sessionsDir 内的文件。
+// 它拒绝绝对路径、路径穿越和逃逸根目录的符号链接。
+func ResolveSessionFile(sessionsDir, input string) (string, error) {
+	if strings.TrimSpace(input) == "" {
+		return "", fmt.Errorf("session path is required")
+	}
+	if strings.ContainsRune(input, '\x00') {
+		return "", fmt.Errorf("session path contains NUL")
 	}
 
-	// 尝试模糊匹配
+	normalized := filepath.FromSlash(input)
+	if filepath.IsAbs(normalized) || filepath.VolumeName(normalized) != "" {
+		return "", fmt.Errorf("absolute session path is not allowed: %s", input)
+	}
+	clean := filepath.Clean(normalized)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("session path escapes sessions directory: %s", input)
+	}
+	ext := strings.ToLower(filepath.Ext(clean))
+	if ext != ".yaml" && ext != ".yml" {
+		clean += ".yaml"
+	}
+
+	rootAbs, err := filepath.Abs(sessionsDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve sessions directory: %w", err)
+	}
+	target := filepath.Join(rootAbs, clean)
+	if err := ensurePathWithinRoot(rootAbs, target); err != nil {
+		return "", err
+	}
+	return target, nil
+}
+
+func ensurePathWithinRoot(root, target string) error {
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("session path escapes sessions directory")
+	}
+
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("resolve sessions directory symlinks: %w", err)
+	}
+
+	existing := target
+	for {
+		if _, err := os.Lstat(existing); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect session path: %w", err)
+		}
+		parent := filepath.Dir(existing)
+		if parent == existing {
+			return fmt.Errorf("cannot resolve session path parent")
+		}
+		existing = parent
+	}
+
+	realExisting, err := filepath.EvalSymlinks(existing)
+	if err != nil {
+		return fmt.Errorf("resolve session path symlinks: %w", err)
+	}
+	realRel, err := filepath.Rel(realRoot, realExisting)
+	if err != nil || realRel == ".." || strings.HasPrefix(realRel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("session path escapes sessions directory through symlink")
+	}
+	return nil
+}
+
+// FindSession 在指定目录内查找唯一匹配的会话。
+// 优先精确路径；模糊匹配超过一个结果时返回歧义错误。
+func FindSession(sessionsDir, input string) (*Session, error) {
+	exactPath, err := ResolveSessionFile(sessionsDir, input)
+	if err != nil {
+		return nil, err
+	}
+	if s, loadErr := LoadSession(exactPath); loadErr == nil {
+		if !s.Valid {
+			return nil, fmt.Errorf("invalid session %s: %w", input, s.Error)
+		}
+		return s, nil
+	} else if !errors.Is(loadErr, os.ErrNotExist) {
+		return nil, loadErr
+	}
+
+	query := strings.TrimSuffix(strings.TrimSuffix(filepath.Clean(filepath.FromSlash(input)), ".yaml"), ".yml")
 	sessions, err := LoadAllSessions(sessionsDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load sessions: %w", err)
 	}
 
+	var matches []*Session
 	for _, sess := range sessions {
-		relPath, _ := filepath.Rel(sessionsDir, sess.FilePath)
-		relPath = strings.TrimSuffix(relPath, ".yaml")
-		if (strings.Contains(relPath, path) || path == filepath.Base(relPath)) && sess.Valid {
-			return sess, nil
+		if !sess.Valid {
+			continue
+		}
+		relPath, relErr := filepath.Rel(sessionsDir, sess.FilePath)
+		if relErr != nil {
+			continue
+		}
+		relPath = strings.TrimSuffix(strings.TrimSuffix(relPath, ".yaml"), ".yml")
+		if strings.Contains(relPath, query) || query == filepath.Base(relPath) {
+			matches = append(matches, sess)
 		}
 	}
-
-	return nil, fmt.Errorf("session not found: %s", path)
+	if len(matches) == 1 {
+		return matches[0], nil
+	}
+	if len(matches) > 1 {
+		names := make([]string, 0, len(matches))
+		for _, match := range matches {
+			names = append(names, GetSessionPath(sessionsDir, match))
+		}
+		return nil, fmt.Errorf("%w %q: %s", ErrSessionAmbiguous, input, strings.Join(names, ", "))
+	}
+	return nil, fmt.Errorf("%w: %s", ErrSessionNotFound, input)
 }

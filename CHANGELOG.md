@@ -2,6 +2,31 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.0.0] - 2026-08-23
+
+### Added
+- xssh 和 xftp 顶部下拉菜单栏，支持鼠标点击、悬停切换、菜单项点击和 F10/方向键导航。
+- xssh 目录右键菜单、详情面板独立滚轮；xftp 菜单覆盖文件、视图和传输操作。
+- 会话路径穿越、符号链接逃逸、模糊匹配歧义和原子传输回归测试。
+
+### Changed
+- SSH 非交互连接统一使用 context，覆盖 TCP、ProxyJump 和 SSH 握手超时。
+- 单认证和多认证统一默认密钥回退、ProxyJump、环路检测及主机密钥验证。
+- xssh exec 使用有界输出缓冲，取消后等待 SSH 执行退出，避免竞争和内存失控。
+- xftp 上传、下载和远程复制改为临时文件提交，失败时保留原目标。
+- xssh/xftp 子命令返回退出码；仅 main 调用 `os.Exit`，确保 defer 清理资源。
+- 会话和全局配置启用严格 YAML 字段检查；全局配置改为原子保存。
+
+### Fixed
+- 修复 `xssh edit` 模糊匹配后写入错误路径并产生重复会话。
+- 修复 key 认证未配置 `key_path` 时未使用默认 SSH 密钥。
+- 修复 `strict_host_key: true` 在 known_hosts 异常时静默关闭验证。
+- 修复 ping/exec 超时未覆盖 SSH 握手以及取消后残留连接。
+- 修复外部会话加载错误被静默忽略；可选外部源不可用时改为状态栏非阻塞警告，不再遮挡其余可用会话。
+
+### Removed
+- 删除 xsc-mcp 可执行程序、MCP 工具实现、依赖、构建目标和活动文档。
+
 ## [1.4.2] - 2026-05-05
 
 v1.4.1 修复后续的护栏加固。无 production 行为改动（除 Validate 多接受 4 个 SSH

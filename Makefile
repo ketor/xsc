@@ -1,8 +1,7 @@
-.PHONY: build build-xftp build-mcp build-all clean install run run-xftp test
+.PHONY: build build-xftp clean install uninstall run run-xftp tui list test race fmt vet deps tidy check dev
 
 BINARY_NAME=xssh
 BINARY_XFTP=xftp
-BINARY_MCP=xsc-mcp
 BUILD_DIR=./build
 INSTALL_DIR=/usr/local/bin
 
@@ -11,25 +10,17 @@ GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 BUILD_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS=-ldflags "-X github.com/ketor/xsc/pkg/version.Version=$(VERSION) -X github.com/ketor/xsc/pkg/version.GitCommit=$(GIT_COMMIT) -X github.com/ketor/xsc/pkg/version.BuildDate=$(BUILD_DATE)"
 
-# 构建 xssh、xftp 和 xsc-mcp
+# 构建 xssh 和 xftp
 build:
 	mkdir -p $(BUILD_DIR)
 	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/xssh
 	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_XFTP) ./cmd/xftp
-	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_MCP) ./cmd/xsc-mcp
-
 # 构建 xftp
 build-xftp:
 	mkdir -p $(BUILD_DIR)
 	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_XFTP) ./cmd/xftp
 
-# 构建 xsc-mcp
-build-mcp:
-	mkdir -p $(BUILD_DIR)
-	go build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_MCP) ./cmd/xsc-mcp
 
-# 构建所有二进制
-build-all: build
 
 # 清理构建文件
 clean:
@@ -39,13 +30,11 @@ clean:
 install: build
 	sudo install -m 755 $(BUILD_DIR)/$(BINARY_NAME) $(INSTALL_DIR)/
 	sudo install -m 755 $(BUILD_DIR)/$(BINARY_XFTP) $(INSTALL_DIR)/
-	sudo install -m 755 $(BUILD_DIR)/$(BINARY_MCP) $(INSTALL_DIR)/
 
 # 卸载
 uninstall:
-	rm -f $(INSTALL_DIR)/$(BINARY_NAME)
-	rm -f $(INSTALL_DIR)/$(BINARY_XFTP)
-	rm -f $(INSTALL_DIR)/$(BINARY_MCP)
+	sudo rm -f $(INSTALL_DIR)/$(BINARY_NAME)
+	sudo rm -f $(INSTALL_DIR)/$(BINARY_XFTP)
 
 # 运行 xssh
 run:
@@ -73,13 +62,18 @@ fmt:
 # 检查代码
 vet:
 	go vet ./...
-
-# 下载依赖
+# 下载依赖（不修改 go.mod/go.sum）
 deps:
 	go mod download
+
+tidy:
 	go mod tidy
 
-# 开发模式（自动重载）
+race:
+	go test -race ./...
+
+check: fmt vet test race
+
 dev:
-	@which air > /dev/null || go install github.com/cosmtrek/air@latest
+	@command -v air >/dev/null || { echo "air 未安装；请使用固定版本手动安装"; exit 1; }
 	air

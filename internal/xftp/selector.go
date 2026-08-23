@@ -23,6 +23,7 @@ type SessionSelectedMsg struct {
 type sessionsLoadedMsg struct {
 	tree        *session.SessionNode
 	sessionsDir string
+	err         error
 }
 
 // selectorCommand 是 shared.Command 的类型别名，保持向后兼容
@@ -64,12 +65,13 @@ type Selector struct {
 	lastClickIndex int       // 上次点击的节点索引（双击检测）
 
 	// 状态
-	loading       bool
-	lastKeyG      bool   // 检测 gg 组合
-	lineNumBuffer string // 数字键累积（用于 nG 跳行）
-	statusMsg     string
-	showError     bool
-	errorMessage  string
+	loading        bool
+	lastKeyG       bool   // 检测 gg 组合
+	lineNumBuffer  string // 数字键累积（用于 nG 跳行）
+	statusMsg      string
+	showError      bool
+	errorMessage   string
+	warningMessage string
 }
 
 // NewSelector 创建 session 选择器
@@ -101,8 +103,8 @@ func (s Selector) Init() tea.Cmd {
 // loadSessions 异步加载所有 session
 func (s Selector) loadSessions() tea.Cmd {
 	return func() tea.Msg {
-		tree, sessionsDir := shared.LoadSessionTree()
-		return sessionsLoadedMsg{tree: tree, sessionsDir: sessionsDir}
+		tree, sessionsDir, err := shared.LoadSessionTree()
+		return sessionsLoadedMsg{tree: tree, sessionsDir: sessionsDir, err: err}
 	}
 }
 
@@ -119,6 +121,16 @@ func (s Selector) Update(msg tea.Msg) (Selector, tea.Cmd) {
 			s.statusMsg = fmt.Sprintf("%d 个会话", s.countSessions(s.tree))
 		} else {
 			s.statusMsg = "未找到会话"
+		}
+		if msg.err != nil {
+			if msg.tree == nil {
+				s.showError = true
+				s.errorMessage = msg.err.Error()
+			} else {
+				s.warningMessage = msg.err.Error()
+			}
+		} else {
+			s.warningMessage = ""
 		}
 		return s, nil
 
@@ -801,6 +813,9 @@ func (s Selector) renderSelectorStatusBar(width int) string {
 		left += fmt.Sprintf(" | 过滤: '%s'", s.filter)
 	} else {
 		left += fmt.Sprintf(" | %s", s.statusMsg)
+	}
+	if s.warningMessage != "" {
+		left += " | 警告: " + s.warningMessage
 	}
 
 	// 右侧帮助

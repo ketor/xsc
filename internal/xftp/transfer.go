@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -323,27 +322,18 @@ func doUpload(ctx context.Context, src, dest string, client *sftp.Client, taskID
 		srcMode = info.Mode().Perm()
 	}
 
-	// 确保远程目录存在（远程路径用 path.Dir，始终使用 / 分隔符）
-	destDir := path.Dir(dest)
-	if err := client.MkdirAll(destDir); err != nil {
-		return fmt.Errorf("创建远程目录失败: %w", err)
-	}
-
-	destFile, err := client.Create(dest)
+	destFile, err := NewAtomicRemoteFile(client, dest)
 	if err != nil {
-		return fmt.Errorf("创建远程文件失败: %w", err)
-	}
-	defer destFile.Close()
-
-	if err := copyWithProgress(ctx, destFile, srcFile, taskID, ch); err != nil {
-		// best-effort 删除远程残留文件
-		_ = client.Remove(dest)
 		return err
 	}
+	defer destFile.Abort()
 
-	// best-effort 保留源文件权限
-	_ = client.Chmod(dest, srcMode)
-
+	if err := copyWithProgress(ctx, destFile, srcFile, taskID, ch); err != nil {
+		return err
+	}
+	if err := destFile.Commit(srcMode); err != nil {
+		return fmt.Errorf("提交远程文件失败: %w", err)
+	}
 	return nil
 }
 
@@ -361,27 +351,18 @@ func doDownload(ctx context.Context, src, dest string, client *sftp.Client, task
 		srcMode = info.Mode().Perm()
 	}
 
-	// 确保本地目录存在
-	destDir := filepath.Dir(dest)
-	if err := os.MkdirAll(destDir, 0700); err != nil {
-		return fmt.Errorf("创建本地目录失败: %w", err)
-	}
-
-	destFile, err := os.Create(dest)
+	destFile, err := NewAtomicLocalFile(dest)
 	if err != nil {
-		return fmt.Errorf("创建本地文件失败: %w", err)
-	}
-	defer destFile.Close()
-
-	if err := copyWithProgress(ctx, destFile, srcFile, taskID, ch); err != nil {
-		// best-effort 删除本地残留文件
-		_ = os.Remove(dest)
 		return err
 	}
+	defer destFile.Abort()
 
-	// best-effort 保留源文件权限
-	_ = os.Chmod(dest, srcMode)
-
+	if err := copyWithProgress(ctx, destFile, srcFile, taskID, ch); err != nil {
+		return err
+	}
+	if err := destFile.Commit(srcMode); err != nil {
+		return fmt.Errorf("提交本地文件失败: %w", err)
+	}
 	return nil
 }
 

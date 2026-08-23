@@ -17,8 +17,8 @@ import (
 // loadSessions 加载会话
 func (m *Model) loadSessions() tea.Cmd {
 	return func() tea.Msg {
-		tree, sessionsDir := shared.LoadSessionTree()
-		return sessionsLoadedMsg{tree: tree, sessionsDir: sessionsDir}
+		tree, sessionsDir, err := shared.LoadSessionTree()
+		return sessionsLoadedMsg{tree: tree, sessionsDir: sessionsDir, err: err}
 	}
 }
 

@@ -1,6 +1,7 @@
 package ssh
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/pem"
@@ -376,8 +377,9 @@ func TestAppendHostKey(t *testing.T) {
 		t.Fatalf("转换公钥失败: %v", err)
 	}
 
-	addr := &net.TCPAddr{IP: net.ParseIP("192.168.1.1"), Port: 22}
-	appendHostKey(knownHostsPath, addr, sshPub)
+	if err := appendHostKey(knownHostsPath, "192.168.1.1:22", sshPub); err != nil {
+		t.Fatalf("appendHostKey: %v", err)
+	}
 
 	// 验证文件不为空
 	data, err := os.ReadFile(knownHostsPath)
@@ -389,10 +391,11 @@ func TestAppendHostKey(t *testing.T) {
 	}
 }
 
-// TestAppendHostKeyInvalidPath 测试写入不存在路径时不 panic
-func TestAppendHostKeyInvalidPath(t *testing.T) {
-	appendHostKey("/nonexistent/path/known_hosts", nil, nil)
-	// 不 panic 即为通过
+// TestAppendHostKeyInvalidInput 测试无效输入会返回错误。
+func TestAppendHostKeyInvalidInput(t *testing.T) {
+	if err := appendHostKey("/nonexistent/path/known_hosts", "", nil); err == nil {
+		t.Fatal("expected invalid input error")
+	}
 }
 
 // TestFindDefaultSSHKeys 测试默认 SSH 密钥查找
@@ -1332,5 +1335,98 @@ func TestDialWithMultipleAuthEncryptedPasswordDefault(t *testing.T) {
 			client.Close()
 		}
 		t.Fatal("解密失败应返回错误")
+	}
+}
+
+func TestGetSSHConfigKeyUsesDefaultKey(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sshDir := filepath.Join(home, ".ssh")
+	if err := os.MkdirAll(sshDir, 0700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	block, err := ssh.MarshalPrivateKey(privateKey, "")
+	if err != nil {
+		t.Fatalf("MarshalPrivateKey: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sshDir, "id_ed25519"), pem.EncodeToMemory(block), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, cleanup, err := getSSHConfig(&session.Session{
+		Host: "127.0.0.1", Port: 22, User: "root", AuthType: session.AuthTypeKey, Valid: true,
+	})
+	if err != nil {
+		t.Fatalf("getSSHConfig: %v", err)
+	}
+	if cleanup != nil {
+		cleanup()
+	}
+	if len(cfg.Auth) != 1 {
+		t.Fatalf("expected one public-key auth method, got %d", len(cfg.Auth))
+	}
+}
+
+func TestDialContextRejectsProxyJumpCycle(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	config.ResetForTesting()
+	sessionsDir := filepath.Join(home, ".xsc", "sessions")
+	a := &session.Session{
+		Host: "127.0.0.1", Port: 22, User: "root", AuthType: session.AuthTypePassword,
+		Password: "synthetic", ProxyJump: "b", Valid: true,
+	}
+	b := &session.Session{
+		Host: "127.0.0.1", Port: 22, User: "root", AuthType: session.AuthTypePassword,
+		Password: "synthetic", ProxyJump: "a", Valid: true,
+	}
+	if err := session.SaveSession(a, filepath.Join(sessionsDir, "a.yaml")); err != nil {
+		t.Fatalf("save a: %v", err)
+	}
+	if err := session.SaveSession(b, filepath.Join(sessionsDir, "b.yaml")); err != nil {
+		t.Fatalf("save b: %v", err)
+	}
+	loaded, err := session.LoadSession(filepath.Join(sessionsDir, "a.yaml"))
+	if err != nil {
+		t.Fatalf("load a: %v", err)
+	}
+	_, _, err = DialContext(context.Background(), loaded)
+	if err == nil || !strings.Contains(err.Error(), "proxy jump cycle") {
+		t.Fatalf("expected proxy jump cycle error, got %v", err)
+	}
+}
+
+func TestStrictHostKeyInvalidFileFailsClosed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	config.ResetForTesting()
+	configDir := filepath.Join(home, ".xsc")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	knownHostsPath := filepath.Join(configDir, "known_hosts")
+	if err := os.WriteFile(knownHostsPath, []byte("not a known-hosts line"), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	configYAML := fmt.Sprintf("ssh:\n  strict_host_key: true\n  known_hosts_file: %q\n", knownHostsPath)
+	if err := os.WriteFile(filepath.Join(configDir, "config.yaml"), []byte(configYAML), 0600); err != nil {
+		t.Fatalf("WriteFile config: %v", err)
+	}
+	callback := getHostKeyCallback()
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	sshPublicKey, err := ssh.NewPublicKey(publicKey)
+	if err != nil {
+		t.Fatalf("NewPublicKey: %v", err)
+	}
+	addr := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 22}
+	if err := callback("127.0.0.1:22", addr, sshPublicKey); err == nil {
+		t.Fatal("strict host-key parse failure must reject connection")
 	}
 }

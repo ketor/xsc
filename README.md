@@ -1,10 +1,9 @@
 # XSC - SSH Session Manager & SFTP File Manager
 
-基于 Go 和 Bubble Tea 开发的终端 SSH 会话管理工具套件，包含三个工具：
+基于 Go 和 Bubble Tea 开发的终端 SSH 会话管理工具套件，包含两个工具：
 
-- **xssh** — TUI SSH 会话管理器，支持 Vim 风格操作
-- **xftp** — TUI SFTP 双面板文件管理器
-- **xsc-mcp** — MCP Server，让 Claude Code 等 AI 助手直接管理远程服务器
+- **xssh** — TUI SSH 会话管理器，支持 Vim 风格和完整鼠标操作
+- **xftp** — TUI SFTP 双面板文件管理器，支持菜单栏和完整鼠标操作
 
 支持本地 YAML 会话配置，以及直接加载 SecureCRT、Xshell、MobaXterm 会话（含加密密码解密）。
 
@@ -21,7 +20,6 @@
 - ⌨️ **命令补全**：命令模式下支持 Tab 自动补全
 - 🖱️ **鼠标支持**：单击选中、双击连接/进入目录、滚轮翻页
 - 🔒 **灵活的主机密钥验证**：默认跳过验证（便捷优先），可配置启用 TOFU 安全模型
-- 🤖 **AI 助手集成**：通过 MCP Server 让 Claude Code 直接执行远程命令和文件操作
 
 ### xftp 专有特性
 - 📂 **双面板布局**：左侧本地文件系统，右侧远程 SFTP 文件系统
@@ -40,8 +38,8 @@
 git clone <repo-url>
 cd xsc
 
-# 构建（同时构建 xssh、xftp 和 xsc-mcp）
-make build          # 输出到 ./build/xssh、./build/xftp 和 ./build/xsc-mcp
+# 构建 xssh 和 xftp
+make build          # 输出到 ./build/xssh 和 ./build/xftp
 
 # 安装到系统（需要 root 权限）
 sudo make install   # 安装到 /usr/local/bin/
@@ -125,7 +123,7 @@ xftp rm prod/web /tmp/old-backup                   # 删除远程文件/目录
 
 ### 访问 SecureCRT/XShell/MobaXterm 会话
 
-所有 CLI 命令（`connect`、`exec`、`list`、`ls`、`cat`、`get`、`put` 等）均支持直接访问 SecureCRT、XShell 和 MobaXterm 会话，**无需先执行 import 转换**。只要在 `~/.xsc/config.yaml` 中启用了对应来源，会话即可通过命令行和 MCP 直接使用。
+所有 CLI 命令（`connect`、`exec`、`list`、`ls`、`cat`、`get`、`put` 等）均支持直接访问 SecureCRT、XShell 和 MobaXterm 会话，**无需先执行 import 转换**。只要在 `~/.xsc/config.yaml` 中启用了对应来源，会话即可通过命令行和 TUI 直接使用。
 
 ```bash
 # 列出所有会话（包括 SecureCRT/XShell/MobaXterm）
@@ -183,76 +181,7 @@ export XSC_MASTER_PASSWORD='shared-master'
 
 > 注意：`config.yaml` 中的 `password:` 字段**只读取，不写出**。`SaveGlobalConfig` 永不把内存中的主密码持久化到 YAML。文件本身建议保持 0600 权限。
 >
-> 非 TTY 场景（脚本、CI、MCP）下密码缺失时不会卡死，会立刻报错并提示用环境变量。
-
-## MCP Server（Claude Code 集成）
-
-xsc-mcp 是一个 [MCP (Model Context Protocol)](https://modelcontextprotocol.io/) Server，让 Claude Code 等 AI 助手能够通过 xsc 的会话配置直接访问远程服务器，执行命令和管理文件。
-
-### 安装 MCP Server
-
-```bash
-# 1. 构建 xsc-mcp
-make build
-
-# 2. 安装到系统路径
-sudo make install
-
-# 3. 在 Claude Code 中注册 MCP Server
-claude mcp add --transport stdio xsc -- xsc-mcp
-
-# 或指定完整路径
-claude mcp add --transport stdio xsc -- /usr/local/bin/xsc-mcp
-```
-
-验证安装：在 Claude Code 中输入 `/mcp`，确认 `xsc` 显示为 `connected`。
-
-### 可用工具
-
-注册后 Claude Code 自动发现以下工具：
-
-| 工具 | 功能 | 示例 |
-|------|------|------|
-| `list_sessions` | 列出所有 SSH 会话（含 SecureCRT/XShell/MobaXterm） | 按关键词过滤 |
-| `get_session` | 获取会话详情（不含密码） | 模糊路径匹配 |
-| `ssh_exec` | 远程执行命令 | 查看日志、检查状态、故障诊断 |
-| `sftp_list` | 列出远程目录 | 浏览文件系统 |
-| `sftp_read` | 读取远程文件 | 查看配置文件 |
-| `sftp_write` | 写入远程文件 | 修改配置 |
-| `sftp_upload` | 上传本地文件 | 部署文件 |
-| `sftp_download` | 下载远程文件 | 拉取日志 |
-
-### 使用场景
-
-在 Claude Code 对话中直接操作远程服务器：
-
-```
-用户：检查一下 prod/web 服务器的磁盘使用情况
-Claude Code：[调用 ssh_exec: session_path="prod/web", command="df -h"]
-
-用户：看看 nginx 配置文件
-Claude Code：[调用 sftp_read: session_path="prod/web", remote_path="/etc/nginx/nginx.conf"]
-
-用户：把本地的新配置上传上去
-Claude Code：[调用 sftp_upload: session_path="prod/web", local_path="./nginx.conf", remote_path="/etc/nginx/nginx.conf"]
-```
-
-### 会话来源
-
-MCP Server 能访问与 TUI 完全相同的会话范围：
-- `~/.xsc/sessions/` 下的本地 YAML 会话
-- 在 `~/.xsc/config.yaml` 中启用的 SecureCRT 会话
-- 在 `~/.xsc/config.yaml` 中启用的 XShell 会话
-- 在 `~/.xsc/config.yaml` 中启用的 MobaXterm 会话
-
-无需额外配置认证信息，MCP Server 复用已有的密码、密钥和 SSH Agent 配置。
-
-### 安全说明
-
-- MCP Server 通过 stdio 本地运行，不暴露网络端口
-- `list_sessions` 和 `get_session` 返回结果中不包含密码
-- `ssh_exec` 强制最大超时 300 秒
-- `sftp_read` 默认最大读取 1MB，防止大文件导致内存问题
+> 非 TTY 场景（脚本、CI）下密码缺失时不会卡死，会立刻报错并提示用环境变量。
 
 ## 会话配置
 
@@ -353,6 +282,8 @@ description: "堡垒机"
 | `E` | 展开所有目录 |
 | `C` | 折叠所有目录 |
 
+顶部菜单栏提供 `File`、`Session`、`View`、`Help`。按 `F10` 打开菜单，方向键导航，`Enter` 执行，`Esc` 关闭。
+
 ### 鼠标操作
 | 操作 | 功能 |
 |------|------|
@@ -360,6 +291,12 @@ description: "堡垒机"
 | 双击目录 | 展开/折叠目录 |
 | 双击会话 | 连接该会话 |
 | 滚轮上/下 | 上下滚动 3 行 |
+| 单击顶部菜单 | 打开/关闭下拉菜单 |
+| 菜单打开后悬停 | 切换活动菜单或菜单项 |
+| 单击下拉菜单项 | 执行对应操作 |
+| 右键会话 | 打开连接、编辑、重命名、删除菜单 |
+| 右键目录 | 打开展开/折叠、新建会话菜单 |
+| 详情面板滚轮 | 独立滚动会话详情 |
 
 ### 搜索模式
 按 `/` 进入搜索模式，输入关键词可实时过滤会话列表：
@@ -422,12 +359,20 @@ xftp 启动时先进入会话选择器，快捷键与 xssh TUI 相同（导航�
 | `m` | 创建目录 |
 | `R` | 刷新当前面板（重新加载目录，清除搜索过滤） |
 
+顶部菜单栏提供 `File`、`Edit`、`View`、`Transfer`、`Help`，会话选择器和双面板模式均可使用。按 `F10` 可用键盘操作菜单。
+
 ### 文件管理 - 鼠标操作
 | 操作 | 功能 |
 |------|------|
 | 单击 | 选中文件/目录，自动切换到点击的面板 |
 | 双击目录 | 进入该目录 |
 | 滚轮上/下 | 滚动鼠标所在面板 3 行，自动切换焦点 |
+| 单击顶部菜单 | 打开/关闭下拉菜单 |
+| 菜单打开后悬停 | 切换活动菜单或菜单项 |
+| 单击下拉菜单项 | 执行文件、视图或传输操作 |
+| 右键文件/目录 | 打开复制、粘贴、删除、新建目录、重命名菜单 |
+| Shift+单击 | 从选择锚点范围多选 |
+| 单击确认栏按钮 | 确认或取消删除、覆盖操作 |
 
 > 会话选择器同样支持鼠标操作：单击选中、双击连接、滚轮翻页。
 
@@ -711,8 +656,7 @@ ssh:
 项目构建产物：
 ./build/
 ├── xssh                           # SSH 终端管理器
-├── xftp                           # SFTP 文件管理器
-└── xsc-mcp                        # MCP Server（Claude Code 集成）
+└── xftp                           # SFTP 文件管理器
 
 用户数据目录：
 ~/.xsc/
@@ -736,9 +680,8 @@ ssh:
 ## 开发
 
 ```bash
-make build          # 构建 xssh + xftp + xsc-mcp 到 ./build/
+make build          # 构建 xssh + xftp 到 ./build/
 make build-xftp     # 仅构建 xftp
-make build-mcp      # 仅构建 xsc-mcp
 make run            # 运行 xssh TUI
 make run-xftp       # 运行 xftp TUI
 make test           # 运行所有测试：go test -v ./...
@@ -746,13 +689,13 @@ make fmt            # 格式化代码：go fmt ./...
 make vet            # 静态分析：go vet ./...
 make deps           # 下载并整理依赖
 make clean          # 清理构建产物
-make install        # 安装到 /usr/local/bin（xssh + xftp + xsc-mcp）
+make install        # 安装到 /usr/local/bin（xssh + xftp）
 make uninstall      # 卸载
 ```
 
 运行指定测试：
 ```bash
-go test -v ./internal/securecrt/... -run TestDecryptPasswordV2Real
+go test -v ./internal/securecrt/... -run TestDecryptPasswordV2Synthetic
 ```
 
 完整质量检查：

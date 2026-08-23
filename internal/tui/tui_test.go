@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -329,5 +330,21 @@ func TestRenderNodeSecureCRTStyles(t *testing.T) {
 	scSelected := m.renderNode(scSession, true)
 	if !strings.Contains(scSelected, "🔒") {
 		t.Error("Selected SecureCRT session should still show 🔒 icon")
+	}
+}
+
+func TestSessionsLoadedPartialFailureIsNonBlocking(t *testing.T) {
+	model := initialModel()
+	tree := &session.SessionNode{Name: "sessions", IsDir: true}
+	result, _ := model.Update(sessionsLoadedMsg{
+		tree: tree,
+		err:  errors.New("XShell source unavailable"),
+	})
+	updated := result.(Model)
+	if updated.showError {
+		t.Fatal("optional source failure must not open blocking error modal")
+	}
+	if !strings.Contains(updated.loadWarning, "XShell") {
+		t.Fatalf("load warning = %q", updated.loadWarning)
 	}
 }

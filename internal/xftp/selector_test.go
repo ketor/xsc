@@ -1,6 +1,7 @@
 package xftp
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -833,4 +834,19 @@ func TestSelectorSelectCurrentNilNode(t *testing.T) {
 
 	// 不应 panic
 	s, _ = s.selectCurrent()
+}
+
+func TestSelectorPartialSourceFailureIsNonBlocking(t *testing.T) {
+	selector := NewSelector()
+	tree := &session.SessionNode{Name: "sessions", IsDir: true}
+	updated, _ := selector.Update(sessionsLoadedMsg{
+		tree: tree,
+		err:  errors.New("XShell source unavailable"),
+	})
+	if updated.showError {
+		t.Fatal("optional source failure must not open blocking error modal")
+	}
+	if !strings.Contains(updated.warningMessage, "XShell") {
+		t.Fatalf("warning message = %q", updated.warningMessage)
+	}
 }

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -639,5 +640,38 @@ func TestLoadSessionsTree(t *testing.T) {
 	}
 	if len(tree.Children) != 2 {
 		t.Errorf("期望 2 个子节点（1 目录 + 1 文件），实际: %d", len(tree.Children))
+	}
+}
+
+func TestResolveSessionFileRejectsTraversal(t *testing.T) {
+	root := t.TempDir()
+	for _, input := range []string{"../outside", "../../outside", "/tmp/outside"} {
+		if _, err := ResolveSessionFile(root, input); err == nil {
+			t.Errorf("ResolveSessionFile(%q) should reject path escape", input)
+		}
+	}
+}
+
+func TestResolveSessionFileRejectsEscapingSymlink(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := ResolveSessionFile(root, "escape/session"); err == nil {
+		t.Fatal("expected symlink escape rejection")
+	}
+}
+
+func TestFindSessionRejectsAmbiguousMatch(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"prod/web.yaml", "staging/web.yaml"} {
+		s := &Session{Host: "127.0.0.1", Port: 22, User: "root", AuthType: AuthTypeAgent}
+		if err := SaveSession(s, filepath.Join(root, name)); err != nil {
+			t.Fatalf("SaveSession(%s): %v", name, err)
+		}
+	}
+	if _, err := FindSession(root, "web"); !errors.Is(err, ErrSessionAmbiguous) {
+		t.Fatalf("expected ErrSessionAmbiguous, got %v", err)
 	}
 }

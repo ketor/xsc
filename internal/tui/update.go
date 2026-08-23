@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ketor/xsc/internal/shared"
 )
 
 // Update 处理消息
@@ -31,6 +32,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleMouse(msg)
 
 	case tea.KeyMsg:
+		if msg.Type == tea.KeyF10 {
+			m.menu.OpenMenu(0, topMenus)
+			return m, nil
+		}
+		if m.menu.Open {
+			return m.handleTopMenuKey(msg)
+		}
 		// 右键菜单打开时，处理菜单键盘操作
 		if m.contextMenu.visible {
 			return m.handleContextMenuKey(msg)
@@ -365,6 +373,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// 默认展开所有目录
 			m.expandAll(m.tree)
 		}
+		if msg.err != nil {
+			if msg.tree == nil {
+				m.errorMessage = msg.err.Error()
+				m.showError = true
+			} else {
+				m.loadWarning = msg.err.Error()
+			}
+		} else {
+			m.loadWarning = ""
+		}
 		return m, func() tea.Msg {
 			// 触发一次刷新以确保界面正确渲染
 			if m.width > 0 && m.height > 0 {
@@ -678,17 +696,147 @@ func (m Model) handleDeleteConfirmInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m Model) handleTopMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc, tea.KeyF10:
+		m.menu.Close()
+		return m, nil
+	case tea.KeyLeft:
+		m.menu.MoveMenu(-1, topMenus)
+		return m, nil
+	case tea.KeyRight:
+		m.menu.MoveMenu(1, topMenus)
+		return m, nil
+	case tea.KeyUp:
+		m.menu.MoveItem(-1, topMenus)
+		return m, nil
+	case tea.KeyDown:
+		m.menu.MoveItem(1, topMenus)
+		return m, nil
+	case tea.KeyEnter:
+		item, ok := m.menu.Selected(topMenus)
+		m.menu.Close()
+		if !ok {
+			return m, nil
+		}
+		return m.executeTopMenuAction(item.Action)
+	}
+	return m, nil
+}
+
+func (m Model) executeTopMenuAction(action string) (tea.Model, tea.Cmd) {
+	switch action {
+	case "quit":
+		return m, tea.Quit
+	case "reload":
+		return m, m.loadSessions()
+	case "password":
+		m.showPassword = !m.showPassword
+		return m, nil
+	case "expand-all":
+		if m.tree != nil {
+			m.expandAll(m.tree)
+		}
+		return m, nil
+	case "collapse-all":
+		if m.tree != nil {
+			m.collapseAll(m.tree)
+		}
+		return m, nil
+	case "new":
+		return m, m.prepareNewSession()
+	case "connect":
+		return m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	case "edit":
+		return m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	case "rename":
+		return m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	case "delete":
+		return m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'D'}})
+	case "search":
+		return m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	case "help":
+		return m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	}
+	return m, nil
+}
+
+func (m Model) handleTopMenuMouse(msg tea.MouseMsg) (Model, tea.Cmd, bool) {
+	if msg.Y == 0 {
+		index := shared.MenuIndexAtX(topMenus, msg.X)
+		if index >= 0 {
+			if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+				if m.menu.Open && m.menu.Active == index {
+					m.menu.Close()
+				} else {
+					m.menu.OpenMenu(index, topMenus)
+				}
+				m.contextMenu.visible = false
+				return m, nil, true
+			}
+			if m.menu.Open {
+				m.menu.OpenMenu(index, topMenus)
+				return m, nil, true
+			}
+		}
+	}
+	if !m.menu.Open {
+		return m, nil, false
+	}
+
+	items := topMenus[m.menu.Active].Items
+	startX := shared.MenuStartX(topMenus, m.menu.Active)
+	width := 0
+	for _, item := range items {
+		width = max(width, len([]rune(item.Label))+len([]rune(item.Shortcut))+5)
+	}
+	if msg.Y >= 1 && msg.Y <= len(items) && msg.X >= startX && msg.X < startX+width {
+		m.menu.Cursor = msg.Y - 1
+		if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+			item, ok := m.menu.Selected(topMenus)
+			m.menu.Close()
+			if !ok {
+				return m, nil, true
+			}
+			next, cmd := m.executeTopMenuAction(item.Action)
+			return next.(Model), cmd, true
+		}
+		return m, nil, true
+	}
+	if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+		m.menu.Close()
+		return m, nil, true
+	}
+	return m, nil, true
+}
+
 // handleMouse 处理鼠标事件
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	// 右键菜单打开时，处理关闭逻辑
+	if next, cmd, handled := m.handleTopMenuMouse(msg); handled {
+		return next, cmd
+	}
+	// 右键菜单打开时支持鼠标直接点击菜单项。
 	if m.contextMenu.visible {
 		if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+			if msg.Y == m.height-1 {
+				x := 0
+				if m.contextMenu.node != nil {
+					x = len([]rune(m.contextMenu.node.Name)) + 4
+				}
+				for index, item := range m.contextMenu.items {
+					width := len([]rune(item.Label)) + len([]rune(item.Key)) + 5
+					if msg.X >= x && msg.X < x+width {
+						m.contextMenu.cursor = index
+						return m.executeContextMenuAction()
+					}
+					x += width + 1
+				}
+			}
 			m.contextMenu.visible = false
 			return m, nil
 		}
 		if msg.Button == tea.MouseButtonRight && msg.Action == tea.MouseActionPress {
 			m.contextMenu.visible = false
-			// 不 return，继续处理以打开新菜单
 		} else {
 			return m, nil
 		}
@@ -712,22 +860,30 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.Button {
 	case tea.MouseButtonWheelUp:
-		m.moveCursor(-3)
+		if msg.X >= m.width*70/100 {
+			m.detailView.LineUp(3)
+		} else {
+			m.moveCursor(-3)
+		}
 		return m, nil
 
 	case tea.MouseButtonWheelDown:
-		m.moveCursor(3)
+		if msg.X >= m.width*70/100 {
+			m.detailView.LineDown(3)
+		} else {
+			m.moveCursor(3)
+		}
 		return m, nil
-
 	case tea.MouseButtonLeft:
 		if msg.Action != tea.MouseActionPress {
 			return m, nil
 		}
 
-		// 仅处理树区域点击
+		// 仅处理顶部菜单下方的树区域点击。
 		treeWidth := m.width * 70 / 100
 		contentHeight := m.height - 2
-		if msg.X < 0 || msg.X >= treeWidth || msg.Y < 0 || msg.Y >= contentHeight {
+		contentY := msg.Y - 1
+		if msg.X < 0 || msg.X >= treeWidth || contentY < 0 || contentY >= contentHeight {
 			return m, nil
 		}
 
@@ -735,10 +891,8 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if len(visibleNodes) == 0 {
 			return m, nil
 		}
-
 		startIdx := computeTreeOffset(m.cursor, len(visibleNodes), contentHeight)
-		clickedIndex := startIdx + msg.Y
-
+		clickedIndex := startIdx + contentY
 		if clickedIndex >= len(visibleNodes) {
 			return m, nil
 		}
@@ -773,7 +927,8 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 		treeWidth := m.width * 70 / 100
 		contentHeight := m.height - 2
-		if msg.X < 0 || msg.X >= treeWidth || msg.Y < 0 || msg.Y >= contentHeight {
+		contentY := msg.Y - 1
+		if msg.X < 0 || msg.X >= treeWidth || contentY < 0 || contentY >= contentHeight {
 			return m, nil
 		}
 
@@ -782,7 +937,7 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		startIdx := computeTreeOffset(m.cursor, len(visibleNodes), contentHeight)
-		clickedIndex := startIdx + msg.Y
+		clickedIndex := startIdx + contentY
 		if clickedIndex >= len(visibleNodes) {
 			return m, nil
 		}
@@ -791,6 +946,15 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.cursor = clickedIndex
 
 		if node.IsDir {
+			label := "展开"
+			if node.Expanded {
+				label = "折叠"
+			}
+			items := []ContextMenuItem{
+				{Label: label, Key: "Click", Action: "toggle-folder"},
+				{Label: "新建会话", Key: "n", Action: "new-in-folder"},
+			}
+			m.contextMenu = ContextMenu{visible: true, items: items, cursor: 0, node: node}
 			return m, nil
 		}
 
@@ -848,8 +1012,17 @@ func (m Model) executeContextMenuAction() (tea.Model, tea.Cmd) {
 	item := m.contextMenu.items[m.contextMenu.cursor]
 	node := m.contextMenu.node
 	m.contextMenu.visible = false
-
-	if node == nil || node.Session == nil {
+	if node == nil {
+		return m, nil
+	}
+	if item.Action == "toggle-folder" && node.IsDir {
+		node.Expanded = !node.Expanded
+		return m, nil
+	}
+	if item.Action == "new-in-folder" && node.IsDir {
+		return m, m.prepareNewSession()
+	}
+	if node.Session == nil {
 		return m, nil
 	}
 

@@ -21,12 +21,12 @@ make vet            # Static analysis: go vet ./...
 make run            # Run xssh TUI mode
 make run-xftp       # Run xftp TUI mode
 make install        # Install both to /usr/local/bin
-make deps           # Download and tidy dependencies
+make deps           # Download dependencies without modifying go.mod/go.sum
 ```
 
 Run a specific test:
 ```bash
-go test -v ./internal/securecrt/... -run TestDecryptPasswordV2Real
+go test -v ./internal/securecrt/... -run TestDecryptPasswordV2Synthetic
 ```
 
 Full quality check: `make fmt && make vet && make test`
@@ -79,7 +79,7 @@ Key test files:
 
 ## Code Conventions
 
-- **Language**: Go 1.21+. Documentation and code comments are written in Chinese.
+- **Language**: Go 1.25+. Documentation and code comments are written in Chinese.
 - **Import order**: stdlib, then third-party, then local (`github.com/ketor/xsc/...`)
 - **Naming**: PascalCase for exported, camelCase for unexported. Acronyms stay uppercase (`SSH`, `TUI`, `CRT`).
 - **YAML tags**: `yaml:"field_name,omitempty"` on struct fields; internal fields use `yaml:"-"`

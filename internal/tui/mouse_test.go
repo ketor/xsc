@@ -139,12 +139,12 @@ func TestHandleMouseLeftClickSetsCursor(t *testing.T) {
 	m := newMouseTestModel()
 	m.cursor = 0
 
-	msg := tea.MouseMsg{X: 5, Y: 2, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}
+	msg := tea.MouseMsg{X: 5, Y: 3, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}
 	result, _ := m.Update(msg)
 	m2 := result.(Model)
 
 	if m2.cursor != 2 {
-		t.Errorf("单击 Y=2 后光标应为 2，实际: %d", m2.cursor)
+		t.Errorf("单击内容行 2 后光标应为 2，实际: %d", m2.cursor)
 	}
 }
 
@@ -169,8 +169,8 @@ func TestHandleMouseDoubleClickUpdatesCursor(t *testing.T) {
 	m := newMouseTestModel()
 	m.cursor = 0
 
-	// 第一次点击 Y=2（server-2，是会话节点）
-	msg := tea.MouseMsg{X: 5, Y: 2, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}
+	// 第一次点击内容行 2（server-2，是会话节点）
+	msg := tea.MouseMsg{X: 5, Y: 3, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}
 	result, _ := m.Update(msg)
 	m = result.(Model)
 
@@ -199,8 +199,8 @@ func TestHandleMouseDoubleClickDirToggle(t *testing.T) {
 		t.Fatal("dir1 初始应为展开状态")
 	}
 
-	// 第一次点击 Y=0（dir1）
-	msg := tea.MouseMsg{X: 5, Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}
+	// 第一次点击内容行 0（dir1）
+	msg := tea.MouseMsg{X: 5, Y: 1, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress}
 	result, _ := m.Update(msg)
 	m = result.(Model)
 
@@ -289,8 +289,8 @@ func TestHandleMouseModalSearchIgnored(t *testing.T) {
 func TestContextMenuRightClick(t *testing.T) {
 	m := newMouseTestModel()
 
-	// 右键点击 Y=1（server-1，非目录会话节点）
-	msg := tea.MouseMsg{X: 5, Y: 1, Button: tea.MouseButtonRight, Action: tea.MouseActionPress}
+	// 右键点击内容行 1（server-1，非目录会话节点）
+	msg := tea.MouseMsg{X: 5, Y: 2, Button: tea.MouseButtonRight, Action: tea.MouseActionPress}
 	result, _ := m.Update(msg)
 	m2 := result.(Model)
 
@@ -305,17 +305,19 @@ func TestContextMenuRightClick(t *testing.T) {
 	}
 }
 
-// TestContextMenuRightClickDir 测试右键点击目录不弹出菜单
+// TestContextMenuRightClickDir 测试右键点击目录显示目录操作。
 func TestContextMenuRightClickDir(t *testing.T) {
 	m := newMouseTestModel()
 
-	// 右键点击 Y=0（dir1，目录节点）
-	msg := tea.MouseMsg{X: 5, Y: 0, Button: tea.MouseButtonRight, Action: tea.MouseActionPress}
+	msg := tea.MouseMsg{X: 5, Y: 1, Button: tea.MouseButtonRight, Action: tea.MouseActionPress}
 	result, _ := m.Update(msg)
 	m2 := result.(Model)
 
-	if m2.contextMenu.visible {
-		t.Error("右键点击目录不应显示上下文菜单")
+	if !m2.contextMenu.visible {
+		t.Fatal("右键点击目录应显示上下文菜单")
+	}
+	if m2.contextMenu.items[0].Action != "toggle-folder" {
+		t.Errorf("目录菜单首项应切换折叠，实际: %s", m2.contextMenu.items[0].Action)
 	}
 }
 
@@ -343,8 +345,8 @@ func TestContextMenuDismissOnLeftClick(t *testing.T) {
 func TestContextMenuReplaceOnRightClick(t *testing.T) {
 	m := newMouseTestModel()
 
-	// 先右键点击 Y=1（server-1）
-	msg1 := tea.MouseMsg{X: 5, Y: 1, Button: tea.MouseButtonRight, Action: tea.MouseActionPress}
+	// 先右键点击内容行 1（server-1）
+	msg1 := tea.MouseMsg{X: 5, Y: 2, Button: tea.MouseButtonRight, Action: tea.MouseActionPress}
 	result, _ := m.Update(msg1)
 	m = result.(Model)
 
@@ -353,8 +355,8 @@ func TestContextMenuReplaceOnRightClick(t *testing.T) {
 	}
 	firstNode := m.contextMenu.node
 
-	// 再右键点击 Y=2（server-2）
-	msg2 := tea.MouseMsg{X: 5, Y: 2, Button: tea.MouseButtonRight, Action: tea.MouseActionPress}
+	// 再右键点击内容行 2（server-2）
+	msg2 := tea.MouseMsg{X: 5, Y: 3, Button: tea.MouseButtonRight, Action: tea.MouseActionPress}
 	result, _ = m.Update(msg2)
 	m = result.(Model)
 
@@ -385,7 +387,7 @@ func TestContextMenuItems(t *testing.T) {
 	m := newMouseTestModel()
 
 	// 右键点击 server-1（有效的非只读会话）
-	msg := tea.MouseMsg{X: 5, Y: 1, Button: tea.MouseButtonRight, Action: tea.MouseActionPress}
+	msg := tea.MouseMsg{X: 5, Y: 2, Button: tea.MouseButtonRight, Action: tea.MouseActionPress}
 	result, _ := m.Update(msg)
 	m2 := result.(Model)
 
@@ -504,5 +506,63 @@ func TestHandleMouseDoubleClickTimingReset(t *testing.T) {
 	}
 	if !m2.tree.Children[0].Expanded {
 		t.Error("超时后不应触发双击折叠")
+	}
+}
+
+func TestTopMenuMouseSearchAction(t *testing.T) {
+	m := newMouseTestModel()
+
+	result, _ := m.Update(tea.MouseMsg{
+		X: 16, Y: 0,
+		Button: tea.MouseButtonLeft, Action: tea.MouseActionPress,
+	})
+	m = result.(Model)
+	if !m.menu.Open || m.menu.Active != 2 {
+		t.Fatalf("点击 View 应打开第三个菜单: %+v", m.menu)
+	}
+
+	result, _ = m.Update(tea.MouseMsg{
+		X: 16, Y: 1,
+		Button: tea.MouseButtonLeft, Action: tea.MouseActionPress,
+	})
+	m = result.(Model)
+	if !m.searchMode {
+		t.Fatal("点击 Search 菜单项应进入搜索模式")
+	}
+	if m.menu.Open {
+		t.Fatal("执行菜单项后应关闭菜单")
+	}
+}
+
+func TestTopMenuHoverSwitchesMenu(t *testing.T) {
+	m := newMouseTestModel()
+	m.menu.OpenMenu(0, topMenus)
+
+	result, _ := m.Update(tea.MouseMsg{
+		X: 8, Y: 0,
+		Action: tea.MouseActionMotion,
+	})
+	m = result.(Model)
+	if m.menu.Active != 1 {
+		t.Fatalf("悬停 Session 应切换活动菜单，实际: %d", m.menu.Active)
+	}
+}
+
+func TestTopMenuF10KeyboardNavigation(t *testing.T) {
+	m := newMouseTestModel()
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyF10})
+	m = result.(Model)
+	if !m.menu.Open {
+		t.Fatal("F10 应打开菜单")
+	}
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m = result.(Model)
+	if m.menu.Active != 1 {
+		t.Fatalf("右方向键应切换菜单，实际: %d", m.menu.Active)
+	}
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = result.(Model)
+	if m.menu.Open {
+		t.Fatal("Esc 应关闭菜单")
 	}
 }

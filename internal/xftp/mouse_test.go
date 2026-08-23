@@ -76,7 +76,7 @@ func TestHandleMouseHeaderOffset(t *testing.T) {
 
 	// 点击 Y=panelHeaderLines（=3）应映射到第一个文件（index 0）
 	msg := tea.MouseMsg{
-		X: 5, Y: panelHeaderLines,
+		X: 5, Y: panelHeaderLines + 1,
 		Button: tea.MouseButtonLeft, Action: tea.MouseActionPress,
 	}
 	result, _ := m.Update(msg)
@@ -88,7 +88,7 @@ func TestHandleMouseHeaderOffset(t *testing.T) {
 
 	// 点击 Y=panelHeaderLines+1 应映射到第二个文件（index 1）
 	msg2 := tea.MouseMsg{
-		X: 5, Y: panelHeaderLines + 1,
+		X: 5, Y: panelHeaderLines + 2,
 		Button: tea.MouseButtonLeft, Action: tea.MouseActionPress,
 	}
 	result2, _ := m2.Update(msg2)
@@ -107,7 +107,7 @@ func TestHandleMouseHeaderClickIgnored(t *testing.T) {
 	// panelHeaderLines=3，测试 Y=0, 1, 2 都应被忽略
 	for y := 0; y < panelHeaderLines; y++ {
 		msg := tea.MouseMsg{
-			X: 5, Y: y,
+			X: 5, Y: y + 1,
 			Button: tea.MouseButtonLeft, Action: tea.MouseActionPress,
 		}
 		result, _ := m.Update(msg)
@@ -165,7 +165,7 @@ func TestHandleMouseLeftClickSetsFile(t *testing.T) {
 
 	// 点击第三个文件（index 2）
 	msg := tea.MouseMsg{
-		X: 5, Y: panelHeaderLines + 2,
+		X: 5, Y: panelHeaderLines + 3,
 		Button: tea.MouseButtonLeft, Action: tea.MouseActionPress,
 	}
 	result, _ := m.Update(msg)
@@ -183,7 +183,7 @@ func TestHandleMouseLeftClickRightPanel(t *testing.T) {
 
 	// 点击右面板区域的第二个文件（index 1）
 	msg := tea.MouseMsg{
-		X: 60, Y: panelHeaderLines + 1,
+		X: 60, Y: panelHeaderLines + 2,
 		Button: tea.MouseButtonLeft, Action: tea.MouseActionPress,
 	}
 	result, _ := m.Update(msg)
@@ -204,7 +204,7 @@ func TestHandleMouseDisconnectedRemote(t *testing.T) {
 	m.remotePanel.cursor = 0
 
 	msg := tea.MouseMsg{
-		X: 60, Y: panelHeaderLines + 1,
+		X: 60, Y: panelHeaderLines + 2,
 		Button: tea.MouseButtonLeft, Action: tea.MouseActionPress,
 	}
 	result, _ := m.Update(msg)
@@ -221,7 +221,7 @@ func TestHandleMouseMotionIgnored(t *testing.T) {
 	m.localPanel.cursor = 0
 
 	msg := tea.MouseMsg{
-		X: 5, Y: panelHeaderLines + 2,
+		X: 5, Y: panelHeaderLines + 3,
 		Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion,
 	}
 	result, _ := m.Update(msg)
@@ -301,7 +301,7 @@ func TestHandleMouseIgnoredInNonNormalMode(t *testing.T) {
 			m.localPanel.cursor = 0
 
 			msg := tea.MouseMsg{
-				X: 5, Y: panelHeaderLines + 2,
+				X: 5, Y: panelHeaderLines + 3,
 				Button: tea.MouseButtonLeft, Action: tea.MouseActionPress,
 			}
 			result, _ := m.Update(msg)
@@ -429,7 +429,7 @@ func TestShiftClickRangeSelect(t *testing.T) {
 
 	// 先单击 index 1 设置选择锚点
 	msg1 := tea.MouseMsg{
-		X: 5, Y: panelHeaderLines + 1,
+		X: 5, Y: panelHeaderLines + 2,
 		Button: tea.MouseButtonLeft, Action: tea.MouseActionPress,
 	}
 	result, _ := m.Update(msg1)
@@ -441,7 +441,7 @@ func TestShiftClickRangeSelect(t *testing.T) {
 
 	// Shift+Click index 3
 	msg2 := tea.MouseMsg{
-		X: 5, Y: panelHeaderLines + 3,
+		X: 5, Y: panelHeaderLines + 4,
 		Shift:  true,
 		Button: tea.MouseButtonLeft, Action: tea.MouseActionPress,
 	}
@@ -468,7 +468,7 @@ func TestShiftClickRangeSelectReverse(t *testing.T) {
 
 	// 先单击 index 3 设置选择锚点
 	msg1 := tea.MouseMsg{
-		X: 5, Y: panelHeaderLines + 3,
+		X: 5, Y: panelHeaderLines + 4,
 		Button: tea.MouseButtonLeft, Action: tea.MouseActionPress,
 	}
 	result, _ := m.Update(msg1)
@@ -476,7 +476,7 @@ func TestShiftClickRangeSelectReverse(t *testing.T) {
 
 	// Shift+Click index 1（反向）
 	msg2 := tea.MouseMsg{
-		X: 5, Y: panelHeaderLines + 1,
+		X: 5, Y: panelHeaderLines + 2,
 		Shift:  true,
 		Button: tea.MouseButtonLeft, Action: tea.MouseActionPress,
 	}
@@ -498,7 +498,7 @@ func TestShiftClickSameIndex(t *testing.T) {
 
 	// 先单击 index 2
 	msg1 := tea.MouseMsg{
-		X: 5, Y: panelHeaderLines + 2,
+		X: 5, Y: panelHeaderLines + 3,
 		Button: tea.MouseButtonLeft, Action: tea.MouseActionPress,
 	}
 	result, _ := m.Update(msg1)
@@ -506,7 +506,7 @@ func TestShiftClickSameIndex(t *testing.T) {
 
 	// Shift+Click 同一位置
 	msg2 := tea.MouseMsg{
-		X: 5, Y: panelHeaderLines + 2,
+		X: 5, Y: panelHeaderLines + 3,
 		Shift:  true,
 		Button: tea.MouseButtonLeft, Action: tea.MouseActionPress,
 	}
@@ -536,7 +536,7 @@ func TestXftpContextMenuRightClick(t *testing.T) {
 
 	// 右键点击第二个文件（index 1）
 	msg := tea.MouseMsg{
-		X: 5, Y: panelHeaderLines + 1,
+		X: 5, Y: panelHeaderLines + 2,
 		Button: tea.MouseButtonRight, Action: tea.MouseActionPress,
 	}
 	result, _ := m.Update(msg)
@@ -558,7 +558,7 @@ func TestXftpContextMenuItems(t *testing.T) {
 	m := newMouseTestXftpModel()
 
 	msg := tea.MouseMsg{
-		X: 5, Y: panelHeaderLines + 1,
+		X: 5, Y: panelHeaderLines + 2,
 		Button: tea.MouseButtonRight, Action: tea.MouseActionPress,
 	}
 	result, _ := m.Update(msg)
@@ -644,7 +644,7 @@ func TestXftpContextMenuRightClickReplace(t *testing.T) {
 
 	// 右键打开菜单
 	msg1 := tea.MouseMsg{
-		X: 5, Y: panelHeaderLines + 1,
+		X: 5, Y: panelHeaderLines + 2,
 		Button: tea.MouseButtonRight, Action: tea.MouseActionPress,
 	}
 	result, _ := m.Update(msg1)
@@ -656,7 +656,7 @@ func TestXftpContextMenuRightClickReplace(t *testing.T) {
 
 	// 右键点击另一个位置
 	msg2 := tea.MouseMsg{
-		X: 5, Y: panelHeaderLines + 3,
+		X: 5, Y: panelHeaderLines + 4,
 		Button: tea.MouseButtonRight, Action: tea.MouseActionPress,
 	}
 	result, _ = m.Update(msg2)
@@ -676,7 +676,7 @@ func TestXftpContextMenuDisconnectedRemote(t *testing.T) {
 	m.connected = false
 
 	msg := tea.MouseMsg{
-		X: 60, Y: panelHeaderLines + 1,
+		X: 60, Y: panelHeaderLines + 2,
 		Button: tea.MouseButtonRight, Action: tea.MouseActionPress,
 	}
 	result, _ := m.Update(msg)
@@ -840,5 +840,75 @@ func TestSelectorClickAtBorder(t *testing.T) {
 
 	if s2.cursor != 0 {
 		t.Errorf("点击上边框不应改变光标，实际: %d", s2.cursor)
+	}
+}
+
+func TestXftpTopMenuMouseSearchAction(t *testing.T) {
+	m := newMouseTestXftpModel()
+
+	result, _ := m.Update(tea.MouseMsg{
+		X: 13, Y: 0,
+		Button: tea.MouseButtonLeft, Action: tea.MouseActionPress,
+	})
+	m = result.(Model)
+	if !m.menu.Open || m.menu.Active != 2 {
+		t.Fatalf("点击 View 应打开第三个菜单: %+v", m.menu)
+	}
+
+	result, _ = m.Update(tea.MouseMsg{
+		X: 13, Y: 2,
+		Button: tea.MouseButtonLeft, Action: tea.MouseActionPress,
+	})
+	m = result.(Model)
+	if m.mode != ModeSearch {
+		t.Fatalf("点击 Search 应进入搜索模式，实际: %d", m.mode)
+	}
+}
+
+func TestXftpTopMenuHoverSwitchesMenu(t *testing.T) {
+	m := newMouseTestXftpModel()
+	m.menu.OpenMenu(0, topMenus)
+
+	result, _ := m.Update(tea.MouseMsg{
+		X: 19, Y: 0,
+		Action: tea.MouseActionMotion,
+	})
+	m = result.(Model)
+	if m.menu.Active != 3 {
+		t.Fatalf("悬停 Transfer 应切换第四个菜单，实际: %d", m.menu.Active)
+	}
+}
+
+func TestXftpTopMenuF10KeyboardNavigation(t *testing.T) {
+	m := newMouseTestXftpModel()
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyF10})
+	m = result.(Model)
+	if !m.menu.Open {
+		t.Fatal("F10 应打开菜单")
+	}
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	m = result.(Model)
+	if m.menu.Active != 1 {
+		t.Fatalf("右方向键应切换菜单，实际: %d", m.menu.Active)
+	}
+	result, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = result.(Model)
+	if m.menu.Open {
+		t.Fatal("Esc 应关闭菜单")
+	}
+}
+
+func TestXftpSelectorTopMenuConsumesClick(t *testing.T) {
+	m := NewModel(nil)
+	m.width = 100
+	m.height = 30
+
+	result, _ := m.Update(tea.MouseMsg{
+		X: 2, Y: 0,
+		Button: tea.MouseButtonLeft, Action: tea.MouseActionPress,
+	})
+	m = result.(Model)
+	if !m.menu.Open {
+		t.Fatal("选择器模式下顶部菜单也应可点击")
 	}
 }

@@ -1,8 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"gopkg.in/yaml.v3"
@@ -163,7 +165,9 @@ func LoadGlobalConfig() (*GlobalConfig, error) {
 			return nil, err
 		}
 
-		if err := yaml.Unmarshal(data, cfg); err != nil {
+		decoder := yaml.NewDecoder(bytes.NewReader(data))
+		decoder.KnownFields(true)
+		if err := decoder.Decode(cfg); err != nil {
 			return nil, err
 		}
 	}
@@ -201,23 +205,44 @@ func applyPasswordEnvOverrides(cfg *GlobalConfig) {
 	}
 }
 
-// SaveGlobalConfig 保存全局配置
+// SaveGlobalConfig 原子保存全局配置。
 func SaveGlobalConfig(config *GlobalConfig) error {
 	configDir, err := GetConfigDir()
 	if err != nil {
 		return err
 	}
-
-	configPath := filepath.Join(configDir, "config.yaml")
-
 	data, err := yaml.Marshal(config)
 	if err != nil {
 		return err
 	}
-
-	if err := os.WriteFile(configPath, data, 0600); err != nil {
+	temp, err := os.CreateTemp(configDir, ".config-*.yaml")
+	if err != nil {
 		return err
 	}
+	tempPath := temp.Name()
+	committed := false
+	defer func() {
+		if !committed {
+			_ = temp.Close()
+			_ = os.Remove(tempPath)
+		}
+	}()
+	if err := temp.Chmod(0600); err != nil {
+		return err
+	}
+	if _, err := temp.Write(data); err != nil {
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, filepath.Join(configDir, "config.yaml")); err != nil {
+		return err
+	}
+	committed = true
 
 	configMu.Lock()
 	globalConfig = config
@@ -269,10 +294,20 @@ func GetConfigDir() (string, error) {
 // GetKnownHostsPath 返回 known_hosts 文件路径
 // 优先级：配置中的路径 > ~/.ssh/known_hosts > ~/.xsc/known_hosts
 func GetKnownHostsPath() (string, error) {
-	// 首先检查配置
 	cfg, err := LoadGlobalConfig()
-	if err == nil && cfg.SSH.KnownHostsFile != "" {
-		return cfg.SSH.KnownHostsFile, nil
+	if err != nil {
+		return "", err
+	}
+	if cfg.SSH.KnownHostsFile != "" {
+		path := cfg.SSH.KnownHostsFile
+		if path == "~" || strings.HasPrefix(path, "~/") {
+			homeDir, homeErr := os.UserHomeDir()
+			if homeErr != nil {
+				return "", homeErr
+			}
+			path = filepath.Join(homeDir, strings.TrimPrefix(path, "~/"))
+		}
+		return path, nil
 	}
 
 	// 检查默认的 ~/.ssh/known_hosts

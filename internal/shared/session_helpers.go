@@ -1,6 +1,7 @@
 package shared
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -66,52 +67,54 @@ func GetIndent(node *session.SessionNode) string {
 	return strings.Repeat("  ", depth)
 }
 
-// LoadSessionTree 加载完整的 session 树，包括本地和外部来源（SecureCRT、XShell、MobaXterm）。
-// 返回合并后的树根节点和 sessionsDir 路径。如果加载失败，tree 为 nil。
-func LoadSessionTree() (tree *session.SessionNode, sessionsDir string) {
+// LoadSessionTree 加载本地和外部会话树。外部源失败时保留可用树并返回聚合错误。
+func LoadSessionTree() (tree *session.SessionNode, sessionsDir string, loadErr error) {
 	var err error
 	sessionsDir, err = config.GetSessionsDir()
 	if err != nil {
-		return nil, ""
+		return nil, "", fmt.Errorf("获取会话目录失败: %w", err)
 	}
-
 	tree, err = session.LoadSessionsTree(sessionsDir)
 	if err != nil {
-		return nil, ""
+		return nil, sessionsDir, fmt.Errorf("加载本地会话失败: %w", err)
 	}
 
-	// 加载全局配置，添加外部 session 源
 	globalConfig, err := config.LoadGlobalConfig()
 	if err != nil {
-		// 配置加载失败时仍返回本地会话树
-		return tree, sessionsDir
+		return tree, sessionsDir, fmt.Errorf("加载全局配置失败: %w", err)
 	}
 
-	// 如果启用了 SecureCRT，加载 SecureCRT 会话
+	externalTrees, warnings := loadExternalSessionTrees(globalConfig)
+	tree.Children = append(tree.Children, externalTrees...)
+	tree.SetParent(nil)
+	return tree, sessionsDir, warnings
+}
+
+func loadExternalSessionTrees(globalConfig *config.GlobalConfig) ([]*session.SessionNode, error) {
+	var trees []*session.SessionNode
+	var warnings []error
+	appendSource := func(name string, sourceTree *session.SessionNode, err error) {
+		if err != nil {
+			warnings = append(warnings, fmt.Errorf("加载 %s 会话失败: %w", name, err))
+			return
+		}
+		if sourceTree != nil {
+			trees = append(trees, sourceTree)
+		}
+	}
 	if globalConfig.SecureCRT.Enabled {
-		scTree, err := session.LoadSecureCRTSessions(globalConfig.SecureCRT)
-		if err == nil && scTree != nil {
-			tree.Children = append(tree.Children, scTree)
-		}
+		sourceTree, err := session.LoadSecureCRTSessions(globalConfig.SecureCRT)
+		appendSource("SecureCRT", sourceTree, err)
 	}
-
-	// 如果启用了 XShell，加载 XShell 会话
 	if globalConfig.XShell.Enabled {
-		xsTree, err := session.LoadXShellSessions(globalConfig.XShell)
-		if err == nil && xsTree != nil {
-			tree.Children = append(tree.Children, xsTree)
-		}
+		sourceTree, err := session.LoadXShellSessions(globalConfig.XShell)
+		appendSource("XShell", sourceTree, err)
 	}
-
-	// 如果启用了 MobaXterm，加载 MobaXterm 会话
 	if globalConfig.MobaXterm.Enabled {
-		mxTree, err := session.LoadMobaXtermSessions(globalConfig.MobaXterm)
-		if err == nil && mxTree != nil {
-			tree.Children = append(tree.Children, mxTree)
-		}
+		sourceTree, err := session.LoadMobaXtermSessions(globalConfig.MobaXterm)
+		appendSource("MobaXterm", sourceTree, err)
 	}
-
-	return tree, sessionsDir
+	return trees, errors.Join(warnings...)
 }
 
 // SessionEntry 表示一个扁平化的会话条目（路径 + 会话对象）
@@ -120,49 +123,58 @@ type SessionEntry struct {
 	Session *session.Session // 会话对象
 }
 
-// FindSessionAllSources 在所有会话来源中查找会话（本地 YAML + SecureCRT/XShell/MobaXterm）
-// 先尝试本地 YAML 快速路径，未找到则在完整会话树中查找（精确匹配 → 模糊匹配）
+// FindSessionAllSources 在所有来源中查找唯一会话。
 func FindSessionAllSources(sessionPath string) (*session.Session, error) {
-	// 快速路径：先在本地 YAML 中查找
 	sessionsDir, err := config.GetSessionsDir()
-	if err == nil {
-		if s, err := session.FindSession(sessionsDir, sessionPath); err == nil {
-			return s, nil
+	if err != nil {
+		return nil, fmt.Errorf("获取会话目录失败: %w", err)
+	}
+	if local, err := session.FindSession(sessionsDir, sessionPath); err == nil {
+		return local, nil
+	} else if !errors.Is(err, session.ErrSessionNotFound) {
+		return nil, err
+	}
+
+	globalConfig, configErr := config.LoadGlobalConfig()
+	if configErr != nil {
+		return nil, configErr
+	}
+	externalTrees, loadErr := loadExternalSessionTrees(globalConfig)
+	root := &session.SessionNode{Name: "external", IsDir: true, Children: externalTrees}
+	root.SetParent(nil)
+	entries := collectSessionEntries(root, "")
+	for _, entry := range entries {
+		if entry.Path == sessionPath {
+			return entry.Session, nil
 		}
 	}
 
-	// 在完整会话树中查找（包括 SecureCRT/XShell/MobaXterm）
-	tree, _ := LoadSessionTree()
-	if tree == nil {
-		return nil, fmt.Errorf("会话未找到: %s", sessionPath)
-	}
-
-	entries := collectSessionEntries(tree, "")
-
-	// 精确匹配
-	for _, e := range entries {
-		if e.Path == sessionPath {
-			return e.Session, nil
+	var matches []SessionEntry
+	for _, entry := range entries {
+		if strings.Contains(entry.Path, sessionPath) || sessionPath == filepath.Base(entry.Path) {
+			matches = append(matches, entry)
 		}
 	}
-
-	// 模糊匹配：路径包含 或 名称匹配
-	for _, e := range entries {
-		if strings.Contains(e.Path, sessionPath) || sessionPath == filepath.Base(e.Path) {
-			return e.Session, nil
-		}
+	if len(matches) == 1 {
+		return matches[0].Session, nil
 	}
-
-	return nil, fmt.Errorf("会话未找到: %s", sessionPath)
+	if len(matches) > 1 {
+		paths := make([]string, 0, len(matches))
+		for _, match := range matches {
+			paths = append(paths, match.Path)
+		}
+		return nil, fmt.Errorf("%w %q: %s", session.ErrSessionAmbiguous, sessionPath, strings.Join(paths, ", "))
+	}
+	return nil, errors.Join(fmt.Errorf("%w: %s", session.ErrSessionNotFound, sessionPath), loadErr)
 }
 
-// LoadAllSessionsFlat 加载所有来源的会话并以扁平列表返回（本地 YAML + SecureCRT/XShell/MobaXterm）
-func LoadAllSessionsFlat() []SessionEntry {
-	tree, _ := LoadSessionTree()
+// LoadAllSessionsFlat 加载所有来源的会话并返回扁平列表及加载警告。
+func LoadAllSessionsFlat() ([]SessionEntry, error) {
+	tree, _, err := LoadSessionTree()
 	if tree == nil {
-		return nil
+		return nil, err
 	}
-	return collectSessionEntries(tree, "")
+	return collectSessionEntries(tree, ""), err
 }
 
 // collectSessionEntries 递归收集会话树中的所有叶子节点

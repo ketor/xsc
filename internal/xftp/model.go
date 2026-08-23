@@ -1,6 +1,7 @@
 package xftp
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -41,6 +42,47 @@ type ContextMenu struct {
 	cursor  int
 }
 
+var topMenus = []shared.Menu{
+	{
+		Label: "File",
+		Items: []shared.MenuItem{
+			{Label: "Sessions", Shortcut: ":q", Action: "sessions"},
+			{Label: "Quit", Shortcut: "Ctrl+C", Action: "quit"},
+		},
+	},
+	{
+		Label: "Edit",
+		Items: []shared.MenuItem{
+			{Label: "Yank", Shortcut: "y", Action: "yank"},
+			{Label: "Paste", Shortcut: "p", Action: "paste"},
+			{Label: "New Directory", Shortcut: "m", Action: "mkdir"},
+			{Label: "Rename", Shortcut: "r", Action: "rename"},
+			{Label: "Delete", Shortcut: "D", Action: "delete"},
+		},
+	},
+	{
+		Label: "View",
+		Items: []shared.MenuItem{
+			{Label: "Switch Panel", Shortcut: "Tab", Action: "switch-panel"},
+			{Label: "Search", Shortcut: "/", Action: "search"},
+			{Label: "Refresh", Shortcut: "R", Action: "refresh"},
+		},
+	},
+	{
+		Label: "Transfer",
+		Items: []shared.MenuItem{
+			{Label: "Cancel Active", Shortcut: "Esc", Action: "cancel-transfer"},
+			{Label: "Clear Finished", Shortcut: "-", Action: "clear-transfers"},
+		},
+	},
+	{
+		Label: "Help",
+		Items: []shared.MenuItem{
+			{Label: "Keyboard Help", Shortcut: "?", Action: "help"},
+		},
+	},
+}
+
 // yankEntry yank 缓冲区条目
 type yankEntry struct {
 	Name  string // 文件名
@@ -77,6 +119,7 @@ type Model struct {
 	width     int
 	height    int
 	keys      KeyMap
+	menu      shared.MenuState
 	statusMsg string
 	err       error
 
@@ -210,7 +253,9 @@ func (m Model) Init() tea.Cmd {
 func (m Model) connectRemote() tea.Cmd {
 	s := m.session
 	return func() tea.Msg {
-		remoteFS, err := NewRemoteFS(s)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		remoteFS, err := NewRemoteFS(ctx, s)
 		if err != nil {
 			return ConnectErrMsg{Err: err}
 		}
@@ -225,7 +270,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		if m.mode == ModeSelector {
-			m.selector.SetSize(m.width, m.height)
+			m.selector.SetSize(m.width, max(1, m.height-1))
 		} else {
 			m.updatePanelSizes()
 		}
@@ -245,12 +290,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleSessionSelected(msg.Session)
 
 	case tea.MouseMsg:
-		// 选择器模式：路由鼠标事件到选择器
+		if next, cmd, handled := m.handleTopMenuMouse(msg); handled {
+			return next, cmd
+		}
 		if m.mode == ModeSelector {
+			if msg.Y == 0 {
+				return m, nil
+			}
+			msg.Y--
 			var cmd tea.Cmd
 			m.selector, cmd = m.selector.Update(msg)
 			return m, cmd
 		}
+		msg.Y--
 		return m.handleMouse(msg)
 
 	case tea.KeyMsg:
@@ -386,6 +438,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // handleKey 处理键盘输入
 func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.Type == tea.KeyF10 {
+		m.menu.OpenMenu(0, topMenus)
+		m.updatePanelSizes()
+		return m, nil
+	}
+	if m.menu.Open {
+		return m.handleTopMenuKey(msg)
+	}
 	// 选择器模式：路由到选择器
 	if m.mode == ModeSelector {
 		var cmd tea.Cmd
@@ -586,7 +646,9 @@ func (m Model) executeCommand(cmd string) (tea.Model, tea.Cmd) {
 		m.statusMsg = "正在重连..."
 		s := m.session
 		return m, func() tea.Msg {
-			remoteFS, err := NewRemoteFS(s)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			remoteFS, err := NewRemoteFS(ctx, s)
 			if err != nil {
 				return ConnectErrMsg{Err: err}
 			}
@@ -619,6 +681,129 @@ func (m Model) switchPanel() (tea.Model, tea.Cmd) {
 
 // routeToActivePanel 将键盘事件路由到激活面板
 // handleRefresh 刷新当前激活面板（清除搜索过滤，重新加载目录）
+func (m Model) handleTopMenuKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc, tea.KeyF10:
+		m.menu.Close()
+		m.updatePanelSizes()
+		return m, nil
+	case tea.KeyLeft:
+		m.menu.MoveMenu(-1, topMenus)
+	case tea.KeyRight:
+		m.menu.MoveMenu(1, topMenus)
+	case tea.KeyUp:
+		m.menu.MoveItem(-1, topMenus)
+	case tea.KeyDown:
+		m.menu.MoveItem(1, topMenus)
+	case tea.KeyEnter:
+		item, ok := m.menu.Selected(topMenus)
+		m.menu.Close()
+		m.updatePanelSizes()
+		if ok {
+			return m.executeTopMenuAction(item.Action)
+		}
+	}
+	return m, nil
+}
+
+func (m Model) executeTopMenuAction(action string) (tea.Model, tea.Cmd) {
+	switch action {
+	case "quit":
+		return m, tea.Quit
+	case "sessions":
+		if m.mode == ModeSelector {
+			return m, nil
+		}
+		return m.executeCommand("q")
+	case "help":
+		m.mode = ModeHelp
+		return m, nil
+	case "switch-panel":
+		return m.switchPanel()
+	case "search":
+		return m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
+	case "refresh":
+		return m.handleRefresh()
+	case "yank":
+		return m.handleYank()
+	case "paste":
+		return m.handlePaste()
+	case "mkdir":
+		return m.handleMkdir()
+	case "rename":
+		return m.handleRename()
+	case "delete":
+		return m.handleDelete()
+	case "cancel-transfer":
+		if m.transfer != nil {
+			m.transfer.Cancel()
+			m.statusMsg = "传输已取消"
+		}
+		return m, nil
+	case "clear-transfers":
+		if m.transfer != nil {
+			m.transfer.ClearCompleted()
+			m.statusMsg = "已清理完成的传输"
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) handleTopMenuMouse(msg tea.MouseMsg) (Model, tea.Cmd, bool) {
+	if msg.Y == 0 {
+		index := shared.MenuIndexAtX(topMenus, msg.X)
+		if index >= 0 {
+			if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+				if m.menu.Open && m.menu.Active == index {
+					m.menu.Close()
+				} else {
+					m.menu.OpenMenu(index, topMenus)
+				}
+				m.contextMenu.visible = false
+				if m.mode == ModeContextMenu {
+					m.mode = ModeNormal
+				}
+				m.updatePanelSizes()
+				return m, nil, true
+			}
+			if m.menu.Open {
+				m.menu.OpenMenu(index, topMenus)
+				m.updatePanelSizes()
+				return m, nil, true
+			}
+		}
+	}
+	if !m.menu.Open {
+		return m, nil, false
+	}
+
+	items := topMenus[m.menu.Active].Items
+	startX := shared.MenuStartX(topMenus, m.menu.Active)
+	width := 0
+	for _, item := range items {
+		width = max(width, len([]rune(item.Label))+len([]rune(item.Shortcut))+5)
+	}
+	if msg.Y >= 1 && msg.Y <= len(items) && msg.X >= startX && msg.X < startX+width {
+		m.menu.Cursor = msg.Y - 1
+		if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+			item, ok := m.menu.Selected(topMenus)
+			m.menu.Close()
+			m.updatePanelSizes()
+			if ok {
+				next, cmd := m.executeTopMenuAction(item.Action)
+				return next.(Model), cmd, true
+			}
+		}
+		return m, nil, true
+	}
+	if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+		m.menu.Close()
+		m.updatePanelSizes()
+	}
+	return m, nil, true
+}
+
 func (m Model) handleRefresh() (tea.Model, tea.Cmd) {
 	// 清除搜索状态
 	m.searchQuery = ""
@@ -663,8 +848,22 @@ func (m Model) routeToActivePanel(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // handleMouse 处理鼠标事件
 func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	// 右键菜单模式：处理关闭
+	// 右键菜单模式：支持鼠标悬停和直接点击底部菜单项。
 	if m.mode == ModeContextMenu {
+		if msg.Y == m.height-2 {
+			x := 1
+			for index, item := range m.contextMenu.items {
+				width := len([]rune(item.Label)) + len([]rune(item.Key)) + 2
+				if msg.X >= x && msg.X < x+width {
+					m.contextMenu.cursor = index
+					if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
+						return m.executeContextMenuAction()
+					}
+					return m, nil
+				}
+				x += width + 2
+			}
+		}
 		if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
 			m.mode = ModeNormal
 			m.contextMenu.visible = false
@@ -673,7 +872,6 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if msg.Button == tea.MouseButtonRight && msg.Action == tea.MouseActionPress {
 			m.mode = ModeNormal
 			m.contextMenu.visible = false
-			// 不 return，继续处理以打开新菜单
 		} else {
 			return m, nil
 		}
@@ -682,8 +880,8 @@ func (m Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	// 确认栏按钮点击检测
 	if m.mode == ModeConfirm || m.mode == ModeOverwriteConfirm {
 		if msg.Button == tea.MouseButtonLeft && msg.Action == tea.MouseActionPress {
-			// 确认栏在底部，检查 Y 坐标是否在确认栏区域
-			barY := m.height - 1
+			// Update 已扣除顶部菜单栏，因此底部确认栏位于 height-2。
+			barY := m.height - 2
 			if msg.Y >= barY-1 && msg.Y <= barY {
 				// 根据确认消息文本宽度计算按钮位置
 				var msgText string
@@ -1028,22 +1226,24 @@ func (m Model) handleDirLoadErr(msg DirLoadErrMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// updatePanelSizes 根据窗口大小更新面板尺寸
+// updatePanelSizes 根据当前菜单、状态栏和辅助栏更新面板尺寸。
 func (m *Model) updatePanelSizes() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
-	// 面板各占一半宽度
 	panelWidth := m.width / 2
-	// 高度：减去状态栏(1)，如果有活跃传输再减去传输条(1)
-	reserved := 1
+	reserved := 2 // 顶部菜单栏 + 状态栏
+	if m.menu.Open {
+		reserved += len(topMenus[m.menu.Active].Items)
+	}
 	if m.transfer != nil && m.transfer.ActiveTask() != nil {
-		reserved = 2
+		reserved++
 	}
-	panelHeight := m.height - reserved - 2 // 减去面板边框高度（RoundedBorder 上+下）
-	if panelHeight < 3 {
-		panelHeight = 3
+	switch m.mode {
+	case ModeCommand, ModeSearch, ModeConfirm, ModeOverwriteConfirm, ModeInput, ModeContextMenu:
+		reserved++
 	}
+	panelHeight := max(3, m.height-reserved-2)
 	m.localPanel.SetSize(panelWidth, panelHeight)
 	m.remotePanel.SetSize(m.width-panelWidth, panelHeight)
 }
@@ -1053,81 +1253,100 @@ func (m Model) View() string {
 	if m.width == 0 || m.height == 0 {
 		return "Loading..."
 	}
-
-	// 选择器模式
-	if m.mode == ModeSelector {
-		return m.selector.View(m.width, m.height)
-	}
-
-	// 帮助模式
 	if m.mode == ModeHelp {
 		return m.renderHelp()
 	}
-
-	// 错误弹窗
 	if m.mode == ModeError {
 		return m.renderError()
 	}
-
-	// 传输结果通知
 	if m.mode == ModeTransferResult {
 		return m.renderTransferResult()
 	}
 
-	// 渲染双面板
+	rows := []string{m.renderTopMenuBar()}
+	if m.menu.Open {
+		rows = append(rows, m.renderDropdownMenu())
+	}
+	if m.mode == ModeSelector {
+		selectorHeight := max(1, m.height-len(rows))
+		rows = append(rows, m.selector.View(m.width, selectorHeight))
+		return lipgloss.JoinVertical(lipgloss.Left, rows...)
+	}
+
+	m.updatePanelSizes()
 	leftView := m.renderPanel(PanelLeft)
 	rightView := m.renderPanel(PanelRight)
-
-	// 水平拼接两个面板
 	panels := lipgloss.JoinHorizontal(lipgloss.Top, leftView, rightView)
+	rows = append(rows, panels)
 
-	// 状态栏
-	statusBar := m.renderStatusBar()
-
-	// 命令模式显示命令栏
-	if m.mode == ModeCommand {
-		cmdBar := m.renderCmdBar()
-		return lipgloss.JoinVertical(lipgloss.Left, panels, statusBar, cmdBar)
+	if transferBar := m.renderTransferBar(); transferBar != "" {
+		rows = append(rows, transferBar)
 	}
+	rows = append(rows, m.renderStatusBar())
 
-	// 搜索模式显示搜索栏
-	if m.mode == ModeSearch {
-		searchBar := m.renderSearchBar()
-		return lipgloss.JoinVertical(lipgloss.Left, panels, statusBar, searchBar)
+	switch m.mode {
+	case ModeCommand:
+		rows = append(rows, m.renderCmdBar())
+	case ModeSearch:
+		rows = append(rows, m.renderSearchBar())
+	case ModeConfirm:
+		rows = append(rows, m.renderConfirmBar())
+	case ModeOverwriteConfirm:
+		rows = append(rows, m.renderOverwriteConfirmBar())
+	case ModeInput:
+		rows = append(rows, m.renderInputBar())
+	case ModeContextMenu:
+		if m.contextMenu.visible {
+			rows = append(rows, m.renderContextMenuBar())
+		}
 	}
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+}
 
-	// 确认对话框
-	if m.mode == ModeConfirm {
-		confirmBar := m.renderConfirmBar()
-		return lipgloss.JoinVertical(lipgloss.Left, panels, statusBar, confirmBar)
+func (m Model) renderTopMenuBar() string {
+	parts := make([]string, 0, len(topMenus))
+	for index, menu := range topMenus {
+		style := lipgloss.NewStyle().
+			Background(lipgloss.Color(colorBgAlt)).
+			Foreground(lipgloss.Color(colorFg)).
+			Padding(0, 1)
+		if m.menu.Open && m.menu.Active == index {
+			style = style.Background(lipgloss.Color(colorYellow)).
+				Foreground(lipgloss.Color(colorBg)).
+				Bold(true)
+		}
+		parts = append(parts, style.Render(menu.Label))
 	}
+	bar := lipgloss.JoinHorizontal(lipgloss.Top, parts...)
+	return lipgloss.NewStyle().
+		Background(lipgloss.Color(colorBgAlt)).
+		Width(m.width).
+		Render(bar)
+}
 
-	// 覆盖确认对话框
-	if m.mode == ModeOverwriteConfirm {
-		overwriteBar := m.renderOverwriteConfirmBar()
-		return lipgloss.JoinVertical(lipgloss.Left, panels, statusBar, overwriteBar)
+func (m Model) renderDropdownMenu() string {
+	menu := topMenus[m.menu.Active]
+	startX := shared.MenuStartX(topMenus, m.menu.Active)
+	width := 0
+	for _, item := range menu.Items {
+		width = max(width, len([]rune(item.Label))+len([]rune(item.Shortcut))+5)
 	}
-
-	// 输入对话框
-	if m.mode == ModeInput {
-		inputBar := m.renderInputBar()
-		return lipgloss.JoinVertical(lipgloss.Left, panels, statusBar, inputBar)
+	lines := make([]string, 0, len(menu.Items))
+	for index, item := range menu.Items {
+		padding := max(1, width-len([]rune(item.Label))-len([]rune(item.Shortcut))-2)
+		line := " " + item.Label + strings.Repeat(" ", padding) + item.Shortcut + " "
+		style := lipgloss.NewStyle().
+			Width(width).
+			Background(lipgloss.Color(colorBgPanel)).
+			Foreground(lipgloss.Color(colorFg))
+		if index == m.menu.Cursor {
+			style = style.Background(lipgloss.Color(colorYellow)).
+				Foreground(lipgloss.Color(colorBg)).
+				Bold(true)
+		}
+		lines = append(lines, strings.Repeat(" ", startX)+style.Render(line))
 	}
-
-	// 右键上下文菜单
-	if m.mode == ModeContextMenu && m.contextMenu.visible {
-		menuBar := m.renderContextMenuBar()
-		return lipgloss.JoinVertical(lipgloss.Left, panels, statusBar, menuBar)
-	}
-
-	// 传输进度条（如果有活跃传输）
-	transferBar := m.renderTransferBar()
-	if transferBar != "" {
-		return lipgloss.JoinVertical(lipgloss.Left, panels, transferBar, statusBar)
-	}
-
-	// 垂直拼接
-	return lipgloss.JoinVertical(lipgloss.Left, panels, statusBar)
+	return lipgloss.JoinVertical(lipgloss.Left, lines...)
 }
 
 // renderSearchBar 渲染搜索栏
@@ -1410,7 +1629,7 @@ func (m Model) handleSessionSelected(s *session.Session) (tea.Model, tea.Cmd) {
 // Run 启动 xftp TUI 程序
 func Run(s *session.Session) error {
 	m := NewModel(s)
-	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseAllMotion())
 
 	finalModel, err := p.Run()
 	if err != nil {

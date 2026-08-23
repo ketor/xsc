@@ -22,8 +22,8 @@ func TestHandleList_TextMode(t *testing.T) {
 
 	code := handleList(context.Background(), ListParams{}, p)
 
-	if code != cli.ExitOK && code != cli.ExitConfig {
-		t.Errorf("handleList() = %d, want %d or %d", code, cli.ExitOK, cli.ExitConfig)
+	if code != cli.ExitOK && code != cli.ExitConfig && code != cli.ExitPartial {
+		t.Errorf("handleList() = %d, want OK, Config, or Partial", code)
 	}
 
 	if code == cli.ExitOK && errOut.Len() > 0 {
@@ -44,12 +44,12 @@ func TestHandleList_JSONMode(t *testing.T) {
 
 	code := handleList(context.Background(), ListParams{JSON: true}, p)
 
-	if code != cli.ExitOK && code != cli.ExitConfig {
-		t.Errorf("handleList() = %d, want %d or %d", code, cli.ExitOK, cli.ExitConfig)
+	if code != cli.ExitOK && code != cli.ExitConfig && code != cli.ExitPartial {
+		t.Errorf("handleList() = %d, want OK, Config, or Partial", code)
 	}
 
-	// JSON 模式成功时输出应为有效 JSON 数组（空时为 []，不为 null）
-	if code == cli.ExitOK {
+	// JSON 模式有完整或部分结果时，stdout 都必须是有效 JSON 数组。
+	if code == cli.ExitOK || code == cli.ExitPartial {
 		var entries []SessionInfo
 		if err := json.Unmarshal(out.Bytes(), &entries); err != nil {
 			t.Errorf("JSON 解析失败: %v, output: %s", err, out.String())
@@ -65,10 +65,16 @@ func TestHandleList_JSONMode(t *testing.T) {
 	}
 }
 
-// mockDial 创建用于测试的 DialFunc
+// mockDial 创建用于测试的 DialFunc。
 func mockDial(latency time.Duration, err error) DialFunc {
-	return func(s *session.Session) (func(), error) {
-		time.Sleep(latency)
+	return func(ctx context.Context, s *session.Session) (func(), error) {
+		timer := time.NewTimer(latency)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -179,10 +185,10 @@ func TestHandlePing_Timeout(t *testing.T) {
 	var out, errOut bytes.Buffer
 	p := cli.NewPrinter(true, &out, &errOut)
 
-	// 模拟 Dial 很慢，超时应触发
-	slowDial := func(s *session.Session) (func(), error) {
-		time.Sleep(2 * time.Second)
-		return func() {}, nil
+	// 模拟受 context 控制的慢连接。
+	slowDial := func(ctx context.Context, s *session.Session) (func(), error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
 	}
 
 	params := PingParams{
@@ -542,13 +548,18 @@ func TestHandleShow_Found(t *testing.T) {
 	sessionsDir := filepath.Join(tmpDir, ".xsc", "sessions")
 	os.MkdirAll(sessionsDir, 0755)
 
+	keyPath := filepath.Join(tmpDir, "id_show")
+	if err := os.WriteFile(keyPath, []byte("test key placeholder"), 0600); err != nil {
+		t.Fatalf("write key fixture: %v", err)
+	}
+
 	// 先创建一个会话文件
 	s := &session.Session{
 		Host:     "10.0.0.99",
 		Port:     22,
 		User:     "deploy",
 		AuthType: "key",
-		KeyPath:  "/home/deploy/.ssh/id_rsa",
+		KeyPath:  keyPath,
 	}
 	session.SaveSession(s, filepath.Join(sessionsDir, "prod", "web1.yaml"))
 
@@ -654,7 +665,7 @@ func TestParseShowArgs(t *testing.T) {
 // 确保 DialFunc 不能访问测试环境外（编译验证 mockDial 签名兼容性）
 func TestDialFunc_Compatibility(t *testing.T) {
 	var df DialFunc = mockDial(0, nil)
-	cleanup, err := df(&session.Session{Valid: true, Host: "127.0.0.1", Port: 22})
+	cleanup, err := df(context.Background(), &session.Session{Valid: true, Host: "127.0.0.1", Port: 22})
 	if err != nil {
 		t.Fatalf("mockDial error: %v", err)
 	}
@@ -666,7 +677,7 @@ func TestDialFunc_Compatibility(t *testing.T) {
 
 func TestDialFunc_Error(t *testing.T) {
 	var df DialFunc = mockDial(0, fmt.Errorf("mock error"))
-	_, err := df(&session.Session{Valid: true, Host: "127.0.0.1", Port: 22})
+	_, err := df(context.Background(), &session.Session{Valid: true, Host: "127.0.0.1", Port: 22})
 	if err == nil || err.Error() != "mock error" {
 		t.Errorf("expected mock error, got: %v", err)
 	}
@@ -1051,6 +1062,11 @@ func TestHandleEdit_Success_JSON(t *testing.T) {
 	}
 	session.SaveSession(s, filepath.Join(sessionsDir, "edit-test.yaml"))
 
+	keyPath := filepath.Join(tmpDir, "id_test")
+	if err := os.WriteFile(keyPath, []byte("test key placeholder"), 0600); err != nil {
+		t.Fatalf("write key fixture: %v", err)
+	}
+
 	var out, errOut bytes.Buffer
 	p := cli.NewPrinter(true, &out, &errOut)
 
@@ -1060,7 +1076,7 @@ func TestHandleEdit_Success_JSON(t *testing.T) {
 		Port:     2222,
 		User:     "admin",
 		AuthType: "key",
-		KeyPath:  "/home/admin/.ssh/id_rsa",
+		KeyPath:  keyPath,
 		JSON:     true,
 	}
 
@@ -1305,5 +1321,56 @@ func TestParseDeleteArgs(t *testing.T) {
 	}
 	if !params.JSON {
 		t.Error("json should be true")
+	}
+}
+
+func TestHandleAddRejectsOverwriteWithoutForce(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	printer := cli.NewPrinter(true, &bytes.Buffer{}, &bytes.Buffer{})
+
+	first := AddParams{Path: "prod/web", Host: "10.0.0.1", AuthType: "agent", JSON: true}
+	if code := handleAdd(context.Background(), first, printer); code != cli.ExitOK {
+		t.Fatalf("first add returned %d", code)
+	}
+	second := first
+	second.Host = "10.0.0.2"
+	if code := handleAdd(context.Background(), second, printer); code != cli.ExitFileOp {
+		t.Fatalf("overwrite add returned %d, want %d", code, cli.ExitFileOp)
+	}
+
+	loaded, err := session.LoadSession(filepath.Join(home, ".xsc", "sessions", "prod", "web.yaml"))
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if loaded.Host != "10.0.0.1" {
+		t.Fatalf("existing session was overwritten: %s", loaded.Host)
+	}
+}
+
+func TestHandleEditUsesCanonicalMatchedPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	sessionsDir := filepath.Join(home, ".xsc", "sessions")
+	originalPath := filepath.Join(sessionsDir, "prod", "web.yaml")
+	if err := session.SaveSession(&session.Session{
+		Host: "10.0.0.1", Port: 22, User: "root", AuthType: session.AuthTypeAgent,
+	}, originalPath); err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+
+	printer := cli.NewPrinter(true, &bytes.Buffer{}, &bytes.Buffer{})
+	if code := handleEdit(context.Background(), EditParams{Path: "web", Host: "10.0.0.2"}, printer); code != cli.ExitOK {
+		t.Fatalf("handleEdit returned %d", code)
+	}
+	if _, err := os.Stat(filepath.Join(sessionsDir, "web.yaml")); !os.IsNotExist(err) {
+		t.Fatal("fuzzy edit created a duplicate root session")
+	}
+	updated, err := session.LoadSession(originalPath)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if updated.Host != "10.0.0.2" {
+		t.Fatalf("canonical session was not updated: %s", updated.Host)
 	}
 }

@@ -1,18 +1,15 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
+
 	"strconv"
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/crypto/ssh"
 
 	"github.com/ketor/xsc/internal/cli"
 	"github.com/ketor/xsc/internal/session"
@@ -37,29 +34,37 @@ type ListParams struct {
 
 // handleList 列出所有会话，返回退出码
 func handleList(_ context.Context, _ ListParams, p *cli.Printer) int {
-	entries := shared.LoadAllSessionsFlat()
+	entries, loadErr := shared.LoadAllSessionsFlat()
 	if entries == nil {
-		p.PrintErr(cli.NewCLIError(cli.ExitConfig, "Error loading sessions", ""))
+		detail := ""
+		if loadErr != nil {
+			detail = loadErr.Error()
+		}
+		p.PrintErr(cli.NewCLIError(cli.ExitConfig, "Error loading sessions", detail))
 		return cli.ExitConfig
 	}
 
 	if p.IsJSON() {
 		result := make([]SessionInfo, 0, len(entries))
-		for _, e := range entries {
-			si := SessionInfo{Path: e.Path}
-			if e.Session != nil {
-				si.Host = e.Session.Host
-				si.Port = e.Session.Port
-				si.User = e.Session.User
-				si.AuthType = string(e.Session.AuthType)
+		for _, entry := range entries {
+			info := SessionInfo{Path: entry.Path}
+			if entry.Session != nil {
+				info.Host = entry.Session.Host
+				info.Port = entry.Session.Port
+				info.User = entry.Session.User
+				info.AuthType = string(entry.Session.AuthType)
 			}
-			result = append(result, si)
+			result = append(result, info)
 		}
-		p.Print(result)
+		_ = p.Print(result)
 	} else {
-		for _, e := range entries {
-			p.Print(e.Path)
+		for _, entry := range entries {
+			_ = p.Print(entry.Path)
 		}
+	}
+	if loadErr != nil {
+		fmt.Fprintf(p.Err, "warning: %v\n", loadErr)
+		return cli.ExitPartial
 	}
 	return cli.ExitOK
 }
@@ -70,6 +75,7 @@ type PingParams struct {
 	JSON     bool
 	Timeout  time.Duration
 	Parallel int
+	ParseErr error
 }
 
 // PingResult 是单个 ping 的结果
@@ -80,16 +86,15 @@ type PingResult struct {
 	Error     string `json:"error,omitempty"`
 }
 
-// DialFunc 是 SSH Dial 的函数签名，便于测试注入
-type DialFunc func(s *session.Session) (cleanup func(), err error)
+// DialFunc 是受 context 控制的 SSH Dial 函数签名，便于测试注入。
+type DialFunc func(ctx context.Context, s *session.Session) (cleanup func(), err error)
 
-// defaultDial 使用真实 SSH 连接
-func defaultDial(s *session.Session) (func(), error) {
-	client, cleanup, err := internalssh.Dial(s)
+// defaultDial 使用真实 SSH 连接。
+func defaultDial(ctx context.Context, s *session.Session) (func(), error) {
+	client, cleanup, err := internalssh.DialContext(ctx, s)
 	if err != nil {
 		return nil, err
 	}
-	// 关闭 client 连接
 	return func() {
 		client.Close()
 		if cleanup != nil {
@@ -98,48 +103,31 @@ func defaultDial(s *session.Session) (func(), error) {
 	}, nil
 }
 
-// pingOne 对单个会话执行连通性检测
+// pingOne 对单个会话执行连通性检测。
 func pingOne(ctx context.Context, path string, dial DialFunc) PingResult {
 	result := PingResult{Session: path}
-
 	s, err := shared.FindSessionAllSources(path)
 	if err != nil {
-		result.Error = "会话未找到"
+		result.Error = err.Error()
 		return result
 	}
-
-	_ = resolveSessionPassword(s)
+	if err := resolveSessionPassword(s); err != nil {
+		result.Error = err.Error()
+		return result
+	}
 
 	start := time.Now()
-
-	// 用 goroutine + select 实现 context 超时
-	type dialResult struct {
-		cleanup func()
-		err     error
-	}
-	ch := make(chan dialResult, 1)
-	go func() {
-		cleanup, dialErr := dial(s)
-		ch <- dialResult{cleanup, dialErr}
-	}()
-
-	select {
-	case <-ctx.Done():
-		result.LatencyMS = time.Since(start).Milliseconds()
-		result.Error = fmt.Sprintf("超时（%s）", ctx.Err())
-		return result
-	case dr := <-ch:
-		result.LatencyMS = time.Since(start).Milliseconds()
-		if dr.err != nil {
-			result.Error = dr.err.Error()
-			return result
-		}
-		if dr.cleanup != nil {
-			dr.cleanup()
-		}
-		result.OK = true
+	cleanup, err := dial(ctx, s)
+	result.LatencyMS = time.Since(start).Milliseconds()
+	if err != nil {
+		result.Error = err.Error()
 		return result
 	}
+	if cleanup != nil {
+		cleanup()
+	}
+	result.OK = true
+	return result
 }
 
 // handlePing 执行连通性检测，返回退出码
@@ -149,6 +137,10 @@ func handlePing(ctx context.Context, params PingParams, p *cli.Printer) int {
 
 // handlePingWithDial 内部实现，支持注入 DialFunc
 func handlePingWithDial(ctx context.Context, params PingParams, p *cli.Printer, dial DialFunc) int {
+	if params.ParseErr != nil {
+		p.PrintErr(cli.NewCLIError(cli.ExitUsage, "参数错误", params.ParseErr.Error()))
+		return cli.ExitUsage
+	}
 	if len(params.Paths) == 0 {
 		p.PrintErr(cli.NewCLIError(cli.ExitUsage, "未指定会话路径", ""))
 		return cli.ExitUsage
@@ -227,7 +219,9 @@ type AddParams struct {
 	Password  string
 	KeyPath   string
 	ProxyJump string
+	Force     bool
 	JSON      bool
+	ParseErr  error
 }
 
 // AddResult 是 add 命令的输出结构
@@ -238,6 +232,10 @@ type AddResult struct {
 
 // handleAdd 创建新会话，返回退出码
 func handleAdd(_ context.Context, params AddParams, p *cli.Printer) int {
+	if params.ParseErr != nil {
+		p.PrintErr(cli.NewCLIError(cli.ExitUsage, "参数错误", params.ParseErr.Error()))
+		return cli.ExitUsage
+	}
 	if params.Host == "" {
 		p.PrintErr(cli.NewCLIError(cli.ExitUsage, "缺少 --host 参数", ""))
 		return cli.ExitUsage
@@ -286,15 +284,28 @@ func handleAdd(_ context.Context, params AddParams, p *cli.Printer) int {
 		s.ProxyJump = params.ProxyJump
 	}
 
-	// 会话文件路径
+	// 会话文件路径必须始终位于 sessionsDir 内。
 	sessionsDir, err := config.GetSessionsDir()
 	if err != nil {
 		p.PrintErr(cli.NewCLIError(cli.ExitConfig, "获取会话目录失败", err.Error()))
 		return cli.ExitConfig
 	}
-	filePath := filepath.Join(sessionsDir, params.Path+".yaml")
-
-	// 原子写入
+	filePath, err := session.ResolveSessionFile(sessionsDir, params.Path)
+	if err != nil {
+		p.PrintErr(cli.NewCLIError(cli.ExitUsage, "无效会话路径", err.Error()))
+		return cli.ExitUsage
+	}
+	if _, err := os.Lstat(filePath); err == nil && !params.Force {
+		p.PrintErr(cli.NewCLIError(cli.ExitFileOp, "会话已存在", "使用 --force 显式覆盖"))
+		return cli.ExitFileOp
+	} else if err != nil && !os.IsNotExist(err) {
+		p.PrintErr(cli.NewCLIError(cli.ExitFileOp, "检查会话文件失败", err.Error()))
+		return cli.ExitFileOp
+	}
+	if err := s.Validate(); err != nil {
+		p.PrintErr(cli.NewCLIError(cli.ExitUsage, "会话参数无效", err.Error()))
+		return cli.ExitUsage
+	}
 	if err := cli.WriteYAML(filePath, s); err != nil {
 		p.PrintErr(cli.NewCLIError(cli.ExitFileOp, "写入会话失败", err.Error()))
 		return cli.ExitFileOp
@@ -311,8 +322,9 @@ func handleAdd(_ context.Context, params AddParams, p *cli.Printer) int {
 
 // ShowParams 是 show 命令的参数
 type ShowParams struct {
-	Path string
-	JSON bool
+	Path     string
+	JSON     bool
+	ParseErr error
 }
 
 // ShowResult 是 show 命令的输出结构
@@ -328,6 +340,10 @@ type ShowResult struct {
 
 // handleShow 查看会话详情，返回退出码
 func handleShow(_ context.Context, params ShowParams, p *cli.Printer) int {
+	if params.ParseErr != nil {
+		p.PrintErr(cli.NewCLIError(cli.ExitUsage, "参数错误", params.ParseErr.Error()))
+		return cli.ExitUsage
+	}
 	if params.Path == "" {
 		p.PrintErr(cli.NewCLIError(cli.ExitUsage, "缺少会话路径", ""))
 		return cli.ExitUsage
@@ -381,6 +397,7 @@ type ExecMultiParams struct {
 	Parallel     int
 	FailFast     bool
 	IgnoreErrors bool
+	ParseErr     error
 }
 
 // ExecMultiResult 是单个 exec 的结果
@@ -411,78 +428,45 @@ type ExecMultiSummary struct {
 // ExecFunc 是远程命令执行的函数签名，便于测试注入
 type ExecFunc func(ctx context.Context, path string, command string) ExecResult
 
-// defaultExec 使用真实 SSH 执行命令
+// defaultExec 使用统一 SSH 执行器运行命令。
 func defaultExec(ctx context.Context, path string, command string) ExecResult {
 	result := ExecResult{Session: path}
-
 	s, err := shared.FindSessionAllSources(path)
 	if err != nil {
-		result.Stderr = "会话未找到"
+		result.Stderr = err.Error()
 		result.ExitCode = cli.ExitNotFound
 		return result
 	}
-
 	if err := resolveSessionPassword(s); err != nil {
 		result.Stderr = err.Error()
 		result.ExitCode = cli.ExitAuthFailed
 		return result
 	}
 
-	client, cleanup, err := internalssh.Dial(s)
-	if err != nil {
-		result.Stderr = err.Error()
-		result.ExitCode = cli.ExitConnFailed
+	commandResult, err := internalssh.RunCommand(ctx, s, command, internalssh.DefaultMaxOutputBytes)
+	result.Stdout = commandResult.Stdout
+	result.Stderr = commandResult.Stderr
+	result.ExitCode = commandResult.ExitCode
+	if commandResult.StdoutTruncated {
+		result.Stdout += "\n[xsc: stdout truncated]\n"
+	}
+	if commandResult.StderrTruncated {
+		result.Stderr += "\n[xsc: stderr truncated]\n"
+	}
+	if err == nil {
 		return result
 	}
-	defer client.Close()
-	if cleanup != nil {
-		defer cleanup()
-	}
-
-	sshSession, err := client.NewSession()
-	if err != nil {
-		result.Stderr = err.Error()
-		result.ExitCode = cli.ExitConnFailed
-		return result
-	}
-	defer sshSession.Close()
-
-	var stdoutBuf, stderrBuf bytes.Buffer
-	sshSession.Stdout = &stdoutBuf
-	sshSession.Stderr = &stderrBuf
-
-	errCh := make(chan error, 1)
-	go func() {
-		errCh <- sshSession.Run(command)
-	}()
-
-	var runErr error
-	select {
-	case <-ctx.Done():
-		sshSession.Signal(ssh.SIGKILL)
-		runErr = ctx.Err()
-	case runErr = <-errCh:
-	}
-
-	result.Stdout = stdoutBuf.String()
-	result.Stderr = stderrBuf.String()
-
-	if runErr != nil {
-		if exitErr, ok := runErr.(*ssh.ExitError); ok {
-			result.ExitCode = exitErr.ExitStatus()
-		} else if ctx.Err() != nil {
-			result.ExitCode = cli.ExitTimeout
-			if result.Stderr == "" {
-				result.Stderr = "命令执行超时"
-			}
-		} else {
-			result.ExitCode = 1
-			if result.Stderr == "" {
-				result.Stderr = runErr.Error()
-			}
+	if ctx.Err() != nil {
+		result.ExitCode = cli.ExitTimeout
+		if result.Stderr == "" {
+			result.Stderr = "命令执行超时"
 		}
+		return result
 	}
-
+	result.ExitCode = cli.ExitConnFailed
+	if result.Stderr == "" {
+		result.Stderr = err.Error()
+	}
 	return result
 }
 
@@ -493,6 +477,10 @@ func handleExecMulti(ctx context.Context, params ExecMultiParams, p *cli.Printer
 
 // handleExecMultiWithFunc 内部实现，支持注入 ExecFunc
 func handleExecMultiWithFunc(ctx context.Context, params ExecMultiParams, p *cli.Printer, execFn ExecFunc) int {
+	if params.ParseErr != nil {
+		p.PrintErr(cli.NewCLIError(cli.ExitUsage, "参数错误", params.ParseErr.Error()))
+		return cli.ExitUsage
+	}
 	if len(params.Paths) == 0 {
 		p.PrintErr(cli.NewCLIError(cli.ExitUsage, "未指定会话路径", ""))
 		return cli.ExitUsage
@@ -580,82 +568,106 @@ func printExecResult(p *cli.Printer, r ExecResult) {
 // parseExecMultiArgs 解析 exec 批量命令参数
 // 格式: <path1,path2,...> [--json] [--timeout 30] [--parallel 5] [--fail-fast] [--ignore-errors] <command...>
 func parseExecMultiArgs(sessionPaths string, args []string) ExecMultiParams {
-	params := ExecMultiParams{
-		Paths:    strings.Split(sessionPaths, ","),
-		Timeout:  30 * time.Second,
-		Parallel: 5,
+	params := ExecMultiParams{Timeout: 30 * time.Second, Parallel: 5}
+	for _, value := range strings.Split(sessionPaths, ",") {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			params.ParseErr = fmt.Errorf("session path list contains an empty entry")
+			return params
+		}
+		params.Paths = append(params.Paths, value)
 	}
 
-	var cmdArgs []string
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
+	var commandArgs []string
+	parsingOptions := true
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if !parsingOptions {
+			commandArgs = append(commandArgs, arg)
+			continue
+		}
+		switch arg {
+		case "--":
+			parsingOptions = false
 		case "--json":
 			params.JSON = true
-		case "--timeout", "-t":
-			if i+1 < len(args) {
-				i++
-				if n, err := strconv.Atoi(args[i]); err == nil && n > 0 {
-					if n > 300 {
-						n = 300
-					}
-					params.Timeout = time.Duration(n) * time.Second
-				}
-			}
-		case "--parallel", "-p":
-			if i+1 < len(args) {
-				i++
-				if n, err := strconv.Atoi(args[i]); err == nil && n > 0 {
-					params.Parallel = n
-				}
-			}
 		case "--fail-fast":
 			params.FailFast = true
 		case "--ignore-errors":
 			params.IgnoreErrors = true
+		case "--timeout", "-t", "--parallel", "-p":
+			if index+1 >= len(args) {
+				params.ParseErr = fmt.Errorf("%s requires a value", arg)
+				return params
+			}
+			index++
+			value, err := strconv.Atoi(args[index])
+			if err != nil || value <= 0 {
+				params.ParseErr = fmt.Errorf("%s requires a positive integer", arg)
+				return params
+			}
+			if arg == "--timeout" || arg == "-t" {
+				params.Timeout = time.Duration(min(value, 300)) * time.Second
+			} else {
+				params.Parallel = min(value, 64)
+			}
 		default:
-			cmdArgs = append(cmdArgs, args[i])
+			parsingOptions = false
+			commandArgs = append(commandArgs, arg)
 		}
 	}
-
-	params.Command = strings.Join(cmdArgs, " ")
+	params.Command = strings.Join(commandArgs, " ")
 	return params
 }
 
 // parsePingArgs 解析 ping 命令参数
 func parsePingArgs(args []string) PingParams {
-	params := PingParams{
-		Timeout:  10 * time.Second,
-		Parallel: 5,
-	}
-
+	params := PingParams{Timeout: 10 * time.Second, Parallel: 5}
 	if len(args) == 0 {
 		return params
 	}
-
-	// 第一个非-开头参数是路径（逗号分隔）
-	params.Paths = strings.Split(args[0], ",")
-
-	for i := 1; i < len(args); i++ {
-		switch args[i] {
+	for _, value := range strings.Split(args[0], ",") {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			params.ParseErr = fmt.Errorf("session path list contains an empty entry")
+			return params
+		}
+		params.Paths = append(params.Paths, value)
+	}
+	for index := 1; index < len(args); index++ {
+		arg := args[index]
+		switch arg {
 		case "--json":
 			params.JSON = true
 		case "--timeout", "-t":
-			if i+1 < len(args) {
-				i++
-				if d, err := time.ParseDuration(args[i]); err == nil && d > 0 {
-					params.Timeout = d
-				}
+			if index+1 >= len(args) {
+				params.ParseErr = fmt.Errorf("%s requires a duration", arg)
+				return params
 			}
+			index++
+			duration, err := time.ParseDuration(args[index])
+			if err != nil || duration <= 0 {
+				params.ParseErr = fmt.Errorf("%s requires a positive duration", arg)
+				return params
+			}
+			params.Timeout = min(duration, 5*time.Minute)
 		case "--parallel", "-p":
-			if i+1 < len(args) {
-				i++
-				if n, err := strconv.Atoi(args[i]); err == nil && n > 0 {
-					params.Parallel = n
-				}
+			if index+1 >= len(args) {
+				params.ParseErr = fmt.Errorf("%s requires a positive integer", arg)
+				return params
 			}
+			index++
+			parallel, err := strconv.Atoi(args[index])
+			if err != nil || parallel <= 0 {
+				params.ParseErr = fmt.Errorf("%s requires a positive integer", arg)
+				return params
+			}
+			params.Parallel = min(parallel, 64)
+		default:
+			params.ParseErr = fmt.Errorf("unknown option: %s", arg)
+			return params
 		}
 	}
-
 	return params
 }
 
@@ -670,6 +682,7 @@ type EditParams struct {
 	KeyPath   string
 	ProxyJump string
 	JSON      bool
+	ParseErr  error
 }
 
 // EditResult 是 edit 命令的输出结构
@@ -680,6 +693,10 @@ type EditResult struct {
 
 // handleEdit 修改会话字段，返回退出码
 func handleEdit(_ context.Context, params EditParams, p *cli.Printer) int {
+	if params.ParseErr != nil {
+		p.PrintErr(cli.NewCLIError(cli.ExitUsage, "参数错误", params.ParseErr.Error()))
+		return cli.ExitUsage
+	}
 	if params.Path == "" {
 		p.PrintErr(cli.NewCLIError(cli.ExitUsage, "缺少会话路径", ""))
 		return cli.ExitUsage
@@ -687,7 +704,7 @@ func handleEdit(_ context.Context, params EditParams, p *cli.Printer) int {
 
 	s, err := shared.FindSessionAllSources(params.Path)
 	if err != nil {
-		p.PrintErr(cli.NewCLIError(cli.ExitNotFound, "会话未找到", params.Path))
+		p.PrintErr(cli.NewCLIError(cli.ExitNotFound, "会话查找失败", err.Error()))
 		return cli.ExitNotFound
 	}
 
@@ -720,20 +737,23 @@ func handleEdit(_ context.Context, params EditParams, p *cli.Printer) int {
 		s.ProxyJump = params.ProxyJump
 	}
 
-	// 获取会话文件路径
-	sessionsDir, err := config.GetSessionsDir()
-	if err != nil {
-		p.PrintErr(cli.NewCLIError(cli.ExitConfig, "获取会话目录失败", err.Error()))
-		return cli.ExitConfig
+	if err := s.Validate(); err != nil {
+		p.PrintErr(cli.NewCLIError(cli.ExitUsage, "会话参数无效", err.Error()))
+		return cli.ExitUsage
 	}
-	filePath := filepath.Join(sessionsDir, params.Path+".yaml")
-
-	// 原子写入
-	if err := cli.WriteYAML(filePath, s); err != nil {
+	if s.FilePath == "" {
+		p.PrintErr(cli.NewCLIError(cli.ExitFileOp, "会话文件路径为空", params.Path))
+		return cli.ExitFileOp
+	}
+	if err := cli.WriteYAML(s.FilePath, s); err != nil {
 		p.PrintErr(cli.NewCLIError(cli.ExitFileOp, "写入会话失败", err.Error()))
 		return cli.ExitFileOp
 	}
 
+	sessionsDir, err := config.GetSessionsDir()
+	if err == nil {
+		params.Path = session.GetSessionPath(sessionsDir, s)
+	}
 	result := EditResult{Path: params.Path, Updated: true}
 	if p.IsJSON() {
 		p.Print(result)
@@ -745,9 +765,10 @@ func handleEdit(_ context.Context, params EditParams, p *cli.Printer) int {
 
 // DeleteParams 是 delete 命令的参数
 type DeleteParams struct {
-	Path  string
-	Force bool
-	JSON  bool
+	Path     string
+	Force    bool
+	JSON     bool
+	ParseErr error
 }
 
 // DeleteResult 是 delete 命令的输出结构
@@ -758,23 +779,33 @@ type DeleteResult struct {
 
 // handleDelete 删除会话，返回退出码
 func handleDelete(_ context.Context, params DeleteParams, p *cli.Printer) int {
+	if params.ParseErr != nil {
+		p.PrintErr(cli.NewCLIError(cli.ExitUsage, "参数错误", params.ParseErr.Error()))
+		return cli.ExitUsage
+	}
 	if params.Path == "" {
 		p.PrintErr(cli.NewCLIError(cli.ExitUsage, "缺少会话路径", ""))
 		return cli.ExitUsage
 	}
 
-	// 构建会话文件路径
+	// 构建受 sessionsDir 约束的会话文件路径。
 	sessionsDir, err := config.GetSessionsDir()
 	if err != nil {
 		p.PrintErr(cli.NewCLIError(cli.ExitConfig, "获取会话目录失败", err.Error()))
 		return cli.ExitConfig
 	}
-	filePath := filepath.Join(sessionsDir, params.Path+".yaml")
-
-	// 检查文件是否存在
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		p.PrintErr(cli.NewCLIError(cli.ExitNotFound, "会话未找到", params.Path))
-		return cli.ExitNotFound
+	filePath, err := session.ResolveSessionFile(sessionsDir, params.Path)
+	if err != nil {
+		p.PrintErr(cli.NewCLIError(cli.ExitUsage, "无效会话路径", err.Error()))
+		return cli.ExitUsage
+	}
+	if _, err := os.Lstat(filePath); err != nil {
+		if os.IsNotExist(err) {
+			p.PrintErr(cli.NewCLIError(cli.ExitNotFound, "会话未找到", params.Path))
+			return cli.ExitNotFound
+		}
+		p.PrintErr(cli.NewCLIError(cli.ExitFileOp, "检查会话文件失败", err.Error()))
+		return cli.ExitFileOp
 	}
 
 	// 删除文件

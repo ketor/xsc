@@ -1,6 +1,7 @@
 package xftp
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/user"
@@ -200,28 +201,45 @@ type RemoteFS struct {
 	cleanup    func() // SSH Agent 连接等资源的清理函数
 }
 
-// NewRemoteFS 建立远程文件系统连接
-// 调用 ssh.Dial() 建立 SSH 连接，再创建 SFTP 客户端
-func NewRemoteFS(s *session.Session) (*RemoteFS, error) {
-	sshClient, cleanup, err := internalssh.Dial(s)
+// NewRemoteFS 建立受 context 控制的远程文件系统连接。
+func NewRemoteFS(ctx context.Context, s *session.Session) (*RemoteFS, error) {
+	sshClient, cleanup, err := internalssh.DialContext(ctx, s)
 	if err != nil {
 		return nil, fmt.Errorf("建立 SSH 连接失败: %w", err)
 	}
 
-	sftpClient, err := sftp.NewClient(sshClient)
-	if err != nil {
-		sshClient.Close()
-		if cleanup != nil {
-			cleanup()
-		}
-		return nil, fmt.Errorf("建立 SFTP 连接失败: %w", err)
+	type result struct {
+		client *sftp.Client
+		err    error
 	}
+	done := make(chan result, 1)
+	go func() {
+		client, err := sftp.NewClient(sshClient)
+		done <- result{client: client, err: err}
+	}()
 
-	return &RemoteFS{
-		sftpClient: sftpClient,
-		sshClient:  sshClient,
-		cleanup:    cleanup,
-	}, nil
+	var sftpClient *sftp.Client
+	select {
+	case <-ctx.Done():
+		sshClient.Close()
+		<-done
+		runCleanup(cleanup)
+		return nil, ctx.Err()
+	case created := <-done:
+		if created.err != nil {
+			sshClient.Close()
+			runCleanup(cleanup)
+			return nil, fmt.Errorf("建立 SFTP 连接失败: %w", created.err)
+		}
+		sftpClient = created.client
+	}
+	return &RemoteFS{sftpClient: sftpClient, sshClient: sshClient, cleanup: cleanup}, nil
+}
+
+func runCleanup(cleanup func()) {
+	if cleanup != nil {
+		cleanup()
+	}
 }
 
 // SFTPClient 返回底层 sftp.Client（供传输层直接使用）
